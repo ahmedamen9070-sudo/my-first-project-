@@ -10,7 +10,7 @@ if __name__=='__main__':
     except OSError:
         print('Port is occupied. Close the previous app instance or use --port 8093.');raise SystemExit(1)
     if not args.no_browser:threading.Timer(.7,lambda:webbrowser.open(f'http://127.0.0.1:{args.port}')).start()
-    print('Madar is running. Keep this terminal open. Press Ctrl+C to stop.',flush=True)
+    print('A&M Accounting Hotel for Audit &Control is running. Keep this terminal open. Press Ctrl+C to stop.',flush=True)
     try:http.serve_forever()
     except KeyboardInterrupt:pass
     finally:http.server_close()

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Madar development application: single operator, isolated draft purchasing workflow."""
+"""A&M Accounting Hotel for Audit &Control development application: single operator, isolated draft purchasing workflow."""
 import argparse, json, os, sqlite3, secrets, mimetypes, shutil, tempfile
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
@@ -203,5 +203,5 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__=='__main__':
     parser=argparse.ArgumentParser();parser.add_argument('--port',type=int,default=8090);parser.add_argument('--host',default='127.0.0.1');args=parser.parse_args();init()
-    print(f'Madar development server on {args.host}:{args.port}; isolated database {DB}',flush=True)
+    print(f'A&M development server on {args.host}:{args.port}; isolated database {DB}',flush=True)
     ThreadingHTTPServer((args.host,args.port),Handler).serve_forever()

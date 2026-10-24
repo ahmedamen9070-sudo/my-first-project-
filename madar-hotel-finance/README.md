@@ -1,11 +1,13 @@
-# مدار — النظام المالي للفنادق
+# A&M — Accounting Hotel for Audit &Control
+
+ النظام المالي للفنادق
 
 أول دورة تطوير فعلية: الموردون وبنود المصروفات والخدمات ومسودات الفواتير. هذا المشروع مستقل داخل المستودع؛ ملفات البرنامج القديم لم تتغير.
 
 ## التنزيل والتشغيل
 
-- افتح [حزمة نسخة التجربة](madar-first-workflow.zip) واضغط Download raw file لتنزيل ZIP.
-- فك الضغط، ثم افتح مجلد madar. على Windows مع Python 3.10+ شغّل START_WINDOWS.bat.
+- افتح [حزمة نسخة التجربة](AM-Accounting-Hotel.zip) واضغط Download raw file لتنزيل ZIP.
+- فك الضغط، ثم افتح مجلد AM-Accounting-Hotel. على Windows مع Python 3.10+ شغّل START_WINDOWS.bat.
 - على Linux أو macOS شغّل python3 run.py. المشغل يفتح المتصفح محليًا.
 - لتشغيل المصدر مباشرة، افتح مجلد app وشغّل python3 run.py.
 
