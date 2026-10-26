@@ -31,6 +31,18 @@ def create(*a,**kw):
             assert 'نيو بانوراما' in result['hotel'] and 'رمسيس' in result['hotel']
             assert evaluate('document.querySelector(".hotel-photo").naturalWidth')>100
             assert evaluate('document.querySelectorAll("#modules [data-page=invoices]").length')==0
+            w.run_js('page("accounting")')
+            for _ in range(100):
+                if evaluate('accountingData !== null'):break
+                time.sleep(.1)
+            else:raise AssertionError('Native accounting page did not load')
+            assert evaluate('accountingData.settings.base_currency')=='EGP'
+            assert evaluate('accountingData.accounts.length')>=250
+            assert evaluate('accountingData.accounts.filter(a=>a.parent_id===null).length')==8
+            result['chart_accounts']=evaluate('accountingData.accounts.length')
+            w.run_js('document.querySelector("#account-search").value="111000";renderAccountTree()')
+            time.sleep(.2)
+            ImageGrab.grab().save(str(Path(__file__).with_name('accounting-native.png')))
             w.run_js('page("supplier"); supplierTab("invoices")')
             assert evaluate('!document.querySelector("#invoices").hidden')
             w.run_js('page("dashboard")')

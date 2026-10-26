@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """A&M Accounting Hotel for Audit &Control development application: single operator, isolated draft purchasing workflow."""
 import argparse, json, os, sqlite3, secrets, mimetypes, shutil, tempfile
+import accounting
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -36,6 +37,7 @@ def init():
         if 'kind' not in columns: db.execute("ALTER TABLE invoices ADD COLUMN kind TEXT NOT NULL DEFAULT 'expense'")
         for row in [('DEP-001','المطبخ الرئيسي','CC-KIT'),('DEP-002','المطعم','CC-REST'),('DEP-003','خدمة الغرف','CC-ROOM')]:
             db.execute('INSERT OR IGNORE INTO departments(code,name,cost_code) VALUES(?,?,?)',row)
+        accounting.initialize(db)
 
 def now(): return datetime.now(timezone.utc).isoformat(timespec='seconds')
 def code(db,kind,prefix):
@@ -110,9 +112,11 @@ def invoice(db,pk):
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self,fmt,*args): pass
-    def send(self,status,data,ctype='application/json; charset=utf-8'):
+    def send(self,status,data,ctype='application/json; charset=utf-8',download_name=None):
         raw=json.dumps(data,ensure_ascii=False).encode() if 'json' in ctype else data
-        self.send_response(status);self.send_header('Content-Type',ctype);self.send_header('Content-Length',str(len(raw)))
+        self.send_response(status);
+        if download_name:self.send_header('Content-Disposition','attachment; filename="'+download_name+'"')
+        self.send_header('Content-Type',ctype);self.send_header('Content-Length',str(len(raw)))
         self.send_header('Cache-Control','no-store');self.send_header('X-Content-Type-Options','nosniff')
         self.send_header('Referrer-Policy','same-origin');self.send_header('X-Frame-Options','DENY')
         self.send_header('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
@@ -122,8 +126,11 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path.startswith('/api/'):
                 with connect() as db:
+                    if path=='/api/accounting':return self.send(200,accounting.snapshot(db))
+                    if path=='/api/accounts-export':return self.send(200,accounting.export_csv(db).encode('utf-8'),'text/csv; charset=utf-8','AM-chart-of-accounts.csv')
                     if path=='/api/bootstrap':
-                        return self.send(200,{'csrf':TOKEN,'departments':[dict(r) for r in db.execute('SELECT * FROM departments ORDER BY id')],'suppliers':[dict(r) for r in db.execute('SELECT * FROM suppliers ORDER BY id DESC')],'products':[dict(r) for r in db.execute('SELECT * FROM products ORDER BY id DESC')],'mode':'development','currency':'غير محددة','currency_configured':False})
+                        settings=accounting.get_settings(db)
+                        return self.send(200,{'csrf':TOKEN,'departments':[dict(r) for r in db.execute('SELECT * FROM departments ORDER BY id')],'suppliers':[dict(r) for r in db.execute('SELECT * FROM suppliers ORDER BY id DESC')],'products':[dict(r) for r in db.execute('SELECT * FROM products ORDER BY id DESC')],'mode':'development','currency':settings['base_currency'],'currency_configured':bool(settings['base_currency']),'accounting_settings':settings})
                     if path=='/api/dashboard':
                         r=dict(db.execute("SELECT COUNT(*) count,COALESCE(SUM(total_cents),0) total_cents FROM invoices WHERE status='draft'").fetchone())
                         r['suppliers']=db.execute('SELECT COUNT(*) FROM suppliers').fetchone()[0];r['products']=db.execute('SELECT COUNT(*) FROM products').fetchone()[0]
@@ -156,7 +163,22 @@ class Handler(BaseHTTPRequestHandler):
             path=urlparse(self.path).path
             with connect() as db:
                 db.execute('BEGIN IMMEDIATE')
-                if path=='/api/suppliers' and method=='POST':
+                if path=='/api/accounts' and method=='POST':
+                    result=accounting.create_account(db,data)
+                elif path.startswith('/api/accounts/') and method=='PUT':
+                    result=accounting.update_account(db,int(path.rsplit('/',1)[1]),data)
+                elif path.startswith('/api/account-mappings/') and method=='PUT':
+                    result=accounting.update_mapping(db,int(path.rsplit('/',1)[1]),data)
+                elif path=='/api/accounting-settings' and method=='PUT':
+                    result=accounting.update_settings(db,data)
+                elif path=='/api/accounting/export' and method=='POST':
+                    folder=DB.parent/'exports';folder.mkdir(exist_ok=True)
+                    filename=datetime.now(timezone.utc).strftime('AM-accounts-%Y%m%d-%H%M%S-')+secrets.token_hex(3)+'.csv'
+                    target=folder/filename
+                    target.write_text(accounting.export_csv(db),encoding='utf-8')
+                    audit(db,'account_export',0,'export_csv',{'filename':filename})
+                    result={'filename':filename,'folder':'data/exports','path':str(target.resolve())}
+                elif path=='/api/suppliers' and method=='POST':
                     name=txt(data,'name',150,True)
                     if db.execute('SELECT 1 FROM suppliers WHERE name=?',(name,)).fetchone(): raise ValueError('المورد مسجل بنفس الاسم')
                     c=code(db,'supplier','SUP');cur=db.execute('INSERT INTO suppliers(code,name,phone,tax_number,notes,created_at) VALUES(?,?,?,?,?,?)',(c,name,txt(data,'phone',40),txt(data,'tax_number',60),txt(data,'notes',2000),now()));pk=cur.lastrowid
@@ -194,6 +216,8 @@ class Handler(BaseHTTPRequestHandler):
                     audit(db,'backup',0,'create',{'filename':dest.name});result={'filename':dest.name,'verified':True}
                 else: return self.send(404,{'error':'المسار غير موجود'})
             return self.send(200,result)
+        except accounting.ConflictError as exc:
+            return self.send(409,{'error':str(exc)})
         except sqlite3.IntegrityError:
             return self.send(409,{'error':'بيانات مكررة: راجع اسم الصنف أو رقم فاتورة المورد'})
         except (ValueError,TypeError,KeyError,InvalidOperation,json.JSONDecodeError) as exc:

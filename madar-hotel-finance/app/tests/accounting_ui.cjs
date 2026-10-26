@@ -1,0 +1,71 @@
+/** Accounting foundation E2E. Use an isolated database; never a hotel production file. */
+'use strict';
+const assert=require('node:assert/strict');
+const fs=require('node:fs');
+const path=require('node:path');
+const {chromium}=require('playwright');
+const url=process.env.AM_TEST_URL||'http://127.0.0.1:8094';
+const seed=JSON.parse(fs.readFileSync(path.join(__dirname,'..','accounting_chart.json'),'utf8'));
+async function api(page,route){return page.evaluate(async route=>{const r=await fetch('/api/'+route);if(!r.ok)throw Error('API '+route+' failed');return r.json()},route)}
+async function openChart(page){await page.locator('#modules [data-page="accounting"]').click();await page.waitForFunction(()=>document.querySelector('#account-tree').textContent.includes('الأصول'));}
+(async()=>{
+ const browser=await chromium.launch({executablePath:process.env.AM_CHROMIUM||'/usr/bin/chromium',args:['--no-sandbox']});
+ const page=await browser.newPage({viewport:{width:1440,height:1080}});const errors=[];page.on('pageerror',e=>errors.push(e.message));
+ try{
+  await page.goto(url);await page.waitForSelector('#loading[hidden]',{state:'attached'});await openChart(page);
+  let state=await api(page,'accounting');
+  assert.equal(state.settings.country_code,'EG');assert.equal(state.settings.base_currency,'EGP');assert.equal(state.settings.fiscal_start_month,1);
+  assert.equal(state.counts.total,state.accounts.length);assert.equal(state.counts.groups,state.accounts.filter(a=>!a.posting).length);
+  assert.ok(seed.accounts.every(s=>state.accounts.some(a=>a.code===s.code)),'The complete seeded chart is present');
+  assert.equal(Number(await page.locator('#accounting-summary strong').first().innerText()),state.counts.total);
+  assert.match(await page.locator('#accounting-config').innerText(),/مصر/);assert.match(await page.locator('#accounting-config').innerText(),/EGP/);
+  assert.equal(await page.locator('select').count(),0);assert.equal(await page.locator('aside:visible').count(),0);
+  const cash=state.accounts.find(a=>a.code==='111001');const parent=state.accounts.find(a=>a.code==='111000');
+  await page.locator('#account-search').fill(cash.code);await page.locator(`[data-account-detail="${cash.id}"]`).click();
+  assert.match(await page.locator('#modal-body').innerText(),new RegExp(cash.name));assert.match(await page.locator('#modal-body').innerText(),/مدين/);
+  await page.locator('#modal [data-close="modal"]').click();
+  await page.locator('#account-search').fill('');
+  const stamp=Date.now().toString(36),name='خزينة اختبار واجهة '+stamp,notes='تعريف اختباري دون أرصدة أو قيود '+stamp;
+  await page.locator('#new-account').click();await page.locator('#picker-search').fill(parent.code);
+  await page.locator('#picker-list [data-pick]').filter({hasText:parent.code+' • '+parent.name}).click();
+  await page.locator('#account-name').fill(name);await page.locator('#account-notes').fill(notes);
+  assert.equal(await page.locator('[data-account-kind="posting"]').getAttribute('aria-pressed'),'true');
+  assert.equal(await page.locator('[data-account-side="debit"]').getAttribute('aria-pressed'),'true');
+  await page.screenshot({path:path.join(__dirname,'accounting-dialog.png'),fullPage:true});
+  const createResponse=page.waitForResponse(r=>r.url().endsWith('/api/accounts')&&r.request().method()==='POST');
+  await page.locator('#account-form button[type="submit"]').click();const createdResponse=await createResponse;
+  assert.equal(createdResponse.status(),200);const created=await createdResponse.json();
+  await page.waitForSelector('#account-window:not([open])',{state:'attached'});
+  state=await api(page,'accounting');let stored=state.accounts.find(a=>a.id===created.id);
+  assert.match(stored.code,/^111\d{3}$/);assert.notEqual(stored.code,parent.code);assert.equal(stored.parent_id,parent.id);
+  assert.equal(stored.posting,true);assert.equal(stored.normal_side,parent.normal_side);assert.equal(stored.statement,parent.statement);assert.equal(stored.notes,notes);
+  await page.locator('#account-search').fill(stored.code);await page.waitForSelector(`[data-account-detail="${stored.id}"]`);
+  await page.locator(`[data-account-detail="${stored.id}"]`).click();await page.locator('#edit-account-details').click();
+  const renamed=name+' — مراجعة';await page.locator('#account-name').fill(renamed);
+  const updateResponse=page.waitForResponse(r=>r.url().endsWith('/api/accounts/'+stored.id)&&r.request().method()==='PUT');
+  await page.locator('#account-form button[type="submit"]').click();assert.equal((await updateResponse).status(),200);
+  await page.waitForSelector('#account-window:not([open])',{state:'attached'});await page.reload();await page.waitForSelector('#loading[hidden]',{state:'attached'});await openChart(page);
+  state=await api(page,'accounting');stored=state.accounts.find(a=>a.id===created.id);assert.equal(stored.name,renamed);assert.equal(stored.code,created.code);
+  await page.locator('#account-search').fill(stored.code);await page.waitForFunction(name=>document.querySelector('#account-tree').textContent.includes(name),renamed);
+  await page.screenshot({path:path.join(__dirname,'accounting-tree.png'),fullPage:true});
+  const invoicesBefore=await api(page,'invoices');const mapping=state.mappings.find(m=>m.status!=='confirmed')||state.mappings[0];
+  await page.locator('[data-accounting-tab="mappings"]').click();await page.locator(`[data-edit-mapping="${mapping.id}"]`).click();
+  assert.match(await page.locator('#modal-body').innerText(),new RegExp(mapping.account_code));
+  const mappingResponse=page.waitForResponse(r=>r.url().endsWith('/api/account-mappings/'+mapping.id)&&r.request().method()==='PUT');
+  await page.locator('#confirm-account-mapping').click();assert.equal((await mappingResponse).status(),200);await page.waitForSelector('#modal:not([open])',{state:'attached'});
+  state=await api(page,'accounting');const confirmed=state.mappings.find(m=>m.id===mapping.id);assert.equal(confirmed.status,'confirmed');assert.equal(confirmed.account_id,mapping.account_id);
+  assert.deepEqual((await api(page,'invoices')).map(i=>i.id),invoicesBefore.map(i=>i.id),'Confirming mapping must not create an invoice');
+  const exportResponse=page.waitForResponse(r=>r.url().endsWith('/api/accounting/export')&&r.request().method()==='POST');
+  await page.locator('#export-accounts').click();const exportResult=await exportResponse;assert.equal(exportResult.status(),200);const exported=await exportResult.json();
+  await page.waitForSelector('#modal[open]');assert.ok(exported.path.endsWith('.csv'));assert.ok((await page.locator('#modal-body').innerText()).includes(exported.filename));
+  const csv=await page.evaluate(async()=>{const r=await fetch('/api/accounts-export');if(!r.ok)throw Error('CSV download failed');return r.text()});assert.ok(csv.includes(stored.code));assert.ok(csv.includes(renamed));
+  await page.locator('#modal [data-close="modal"]').click();await page.locator('[data-accounting-tab="tree"]').click();
+  await page.locator('#account-search').fill(stored.code);await page.evaluate(()=>{window.__accountPrintCalls=0;window.print=()=>window.__accountPrintCalls++});await page.locator('#print-accounts').click();
+  assert.equal(await page.evaluate(()=>window.__accountPrintCalls),1);assert.ok((await page.locator('#print-document').textContent()).includes(renamed));assert.ok((await page.locator('#print-document').textContent()).includes(stored.code));
+  await page.setViewportSize({width:390,height:844});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false,'Chart should fit phone viewport');
+  await page.locator('#new-account').click();await page.locator('#picker-search').fill(parent.code);await page.locator('#picker-list [data-pick]').filter({hasText:parent.code+' • '+parent.name}).click();
+  assert.equal(await page.locator('#account-window').evaluate(e=>e.scrollWidth>e.clientWidth),false,'Account entry window should fit phone viewport');
+  await page.locator('#account-window [data-close="account-window"]').first().click();
+  assert.deepEqual(errors,[]);console.log('PASS accounting UI: seeded tree/config, search/detail, automatic child code, saved rename after reload, mapping confirmation, CSV export, filtered print and phone layout.');
+ }finally{await browser.close()}
+})().catch(e=>{console.error(e);process.exitCode=1});

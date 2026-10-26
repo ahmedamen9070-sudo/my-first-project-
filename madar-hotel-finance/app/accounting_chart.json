@@ -1,0 +1,2378 @@
+{
+  "version": 1,
+  "description": "شجرة حسابات فندقية أولية شاملة لـ A&M — نيو بانوراما رمسيس. نموذج قابل للمراجعة قبل تفعيل الترحيل؛ لا يمثل اعتمادًا قانونيًا أو ضريبيًا ولا يتضمن أرصدة افتتاحية.",
+  "adopted_config": {
+    "country_code": "EG",
+    "base_currency": "EGP",
+    "fiscal_start_month": 1
+  },
+  "notes": [
+    "أكد المستخدم مصر والجنيه المصري وسنة مالية يناير–ديسمبر. لا توجد نسب ضرائب أو إهلاك أو أسعار صرف ضمن هذه الشجرة.",
+    "الحسابات التجميعية posting=false لا ترحل عليها قيود. الحسابات التفصيلية posting=true مرشحة للحركة بعد تفعيل السياسة والموديول.",
+    "مراكز التكلفة والإيراد والمخازن والعملات وأرقام الغرف والشركات والأفراد أبعاد أو أستاذ مساعد، وليست نسخًا من الحسابات الرقابية.",
+    "فاتورة المورد للمصروف أو الخدمة مستقلة عن إذن الاستلام. وجود حسابات مخزون لا ينشئ حركة مخزون عند حفظها.",
+    "الربط المبدئي بالموديولات مقترحات فقط، ولا يفعّل الترحيل أو يثبت تطبيق الموديول. يراجع الحساب والمستند والطرف والضريبة ومركز التكلفة قبل الاعتماد.",
+    "تصنيف الأقسام مستلهم من عرض ربحية الفنادق، وليس إعلان امتثال معتمد لـ USALI أو IFRS أو قانون محلي. تراجع مع المحاسب المسؤول.",
+    "المصروفات الرأسمالية والأصول المؤجلة والإيجارات والضرائب المؤجلة تنفذ فقط عند انطباق السياسة المحاسبية والعقود وشروط الاعتراف.",
+    "خزينة الإيرادات وخزينة المصروفات والعهد منفصلة. التحويل بين الخزائن أو الإيداع بالبنك لا يولد مصروفًا أو إيرادًا بذاته."
+  ],
+  "accounts": [
+    {
+      "code": "100000",
+      "name": "الأصول",
+      "parent_code": null,
+      "posting": false,
+      "normal_side": "debit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "110000",
+      "name": "الأصول المتداولة",
+      "parent_code": "100000",
+      "posting": false,
+      "normal_side": "debit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "111000",
+      "name": "النقدية والخزائن",
+      "parent_code": "110000",
+      "posting": false,
+      "normal_side": "debit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "111001",
+      "name": "خزينة الإيرادات اليومية",
+      "parent_code": "111000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "balance_sheet",
+      "role": "revenue_safe",
+      "notes": "خزينة مستقلة عن خزينة المصروفات. التحويل بين الخزنتين حركة نقدية وليس مصروفًا."
+    },
+    {
+      "code": "111002",
+      "name": "خزينة المصروفات والعهد",
+      "parent_code": "111000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "balance_sheet",
+      "role": "expense_safe"
+    },
+    {
+      "code": "111003",
+      "name": "عهدة المصروفات النثرية",
+      "parent_code": "111000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "111004",
+      "name": "خزائن نقاط البيع والمنافذ",
+      "parent_code": "111000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "111005",
+      "name": "نقدية وتحويلات خزائن بالطريق",
+      "parent_code": "111000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "balance_sheet",
+      "role": "cash_in_transit",
+      "notes": "حساب تسوية لحركات النقدية غير المكتملة؛ لا يمثل إيرادًا أو مصروفًا."
+    },
+    {
+      "code": "112000",
+      "name": "الحسابات البنكية",
+      "parent_code": "110000",
+      "posting": false,
+      "normal_side": "debit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "112001",
+      "name": "حسابات بنكية جارية بالعملة المحلية",
+      "parent_code": "112000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "balance_sheet",
+      "role": "local_bank",
+      "notes": "قالب عام؛ يحدد البنك والحساب الفعلي عند إعداد موديول البنوك."
+    },
+    {
+      "code": "112002",
+      "name": "حسابات بنكية بالعملات الأجنبية",
+      "parent_code": "112000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "balance_sheet",
+      "role": "foreign_bank",
+      "notes": "لا يتضمن سعر صرف أو رصيدًا مفترضًا."
+    },
+    {
+      "code": "112003",
+      "name": "ودائع بنكية ونقدية مقيدة متداولة",
+      "parent_code": "112000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "113000",
+      "name": "تحصيلات إلكترونية تحت التسوية",
+      "parent_code": "110000",
+      "posting": false,
+      "normal_side": "debit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "113001",
+      "name": "تسوية تحصيلات Visa",
+      "parent_code": "113000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "balance_sheet",
+      "role": "visa_clearing"
+    },
+    {
+      "code": "113002",
+      "name": "تسوية تحصيلات MasterCard",
+      "parent_code": "113000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "balance_sheet",
+      "role": "mastercard_clearing"
+    },
+    {
+      "code": "113003",
+      "name": "تسوية تحصيلات Meeza",
+      "parent_code": "113000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "balance_sheet",
+      "role": "meeza_clearing"
+    },
+    {
+      "code": "113004",
+      "name": "تسوية تحصيلات InstaPay",
+      "parent_code": "113000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "balance_sheet",
+      "role": "instapay_clearing"
+    },
+    {
+      "code": "113005",
+      "name": "تسوية شبكات الدفع الإلكتروني الأخرى",
+      "parent_code": "113000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "113006",
+      "name": "تحويلات منصات الحجز بالطريق",
+      "parent_code": "113000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "114000",
+      "name": "حسابات النزلاء والعملاء المدينة",
+      "parent_code": "110000",
+      "posting": false,
+      "normal_side": "debit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "114001",
+      "name": "حساب النزلاء الرقابي",
+      "parent_code": "114000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "balance_sheet",
+      "role": "guest_control",
+      "notes": "تفاصيل كل نزيل أو ملف إقامة في أستاذ مساعد، وليست أوراق حسابات منفصلة في الشجرة."
+    },
+    {
+      "code": "114002",
+      "name": "حساب الشركات والعملاء الرقابي",
+      "parent_code": "114000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "balance_sheet",
+      "role": "customer_control",
+      "notes": "تفاصيل الشركات والعملاء في الأستاذ المساعد مع مطابقة إجماليها للحساب الرقابي."
+    },
+    {
+      "code": "114003",
+      "name": "حساب وكلاء وشركات السياحة الرقابي",
+      "parent_code": "114000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "balance_sheet",
+      "role": "agent_control"
+    },
+    {
+      "code": "114004",
+      "name": "حساب منصات الحجز المدينة الرقابي",
+      "parent_code": "114000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "balance_sheet",
+      "role": "ota_receivable_control"
+    },
+    {
+      "code": "114005",
+      "name": "مخصص الخسائر الائتمانية للعملاء",
+      "parent_code": "114000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "balance_sheet",
+      "role": "receivable_allowance",
+      "notes": "حساب مقابل للأصول؛ طبيعته دائنة ولا يحذف ديون العملاء الأصلية."
+    },
+    {
+      "code": "115000",
+      "name": "السلف والعهد والمدينون الآخرون",
+      "parent_code": "110000",
+      "posting": false,
+      "normal_side": "debit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "115001",
+      "name": "سلف الموظفين",
+      "parent_code": "115000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "balance_sheet",
+      "role": "employee_advances"
+    },
+    {
+      "code": "115002",
+      "name": "قروض الموظفين",
+      "parent_code": "115000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "balance_sheet",
+      "role": "employee_loans"
+    },
+    {
+      "code": "115003",
+      "name": "عهد تشغيلية تحت التسوية",
+      "parent_code": "115000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "balance_sheet",
+      "role": "operating_custodies"
+    },
+    {
+      "code": "115004",
+      "name": "دفعات مقدمة للموردين",
+      "parent_code": "115000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "balance_sheet",
+      "role": "supplier_advances"
+    },
+    {
+      "code": "115005",
+      "name": "مدينون آخرون وتأمينات متداولة",
+      "parent_code": "115000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "116000",
+      "name": "المخزون",
+      "parent_code": "110000",
+      "posting": false,
+      "normal_side": "debit",
+      "statement": "balance_sheet",
+      "notes": "الأصناف والوحدات والتشغيلات والمخازن تفاصيل تشغيلية مستقلة. شراء أو صرف مخزون لا يفترض من مجرد فاتورة مصروف أو خدمة."
+    },
+    {
+      "code": "116001",
+      "name": "مخزون الأغذية",
+      "parent_code": "116000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "balance_sheet",
+      "role": "food_inventory"
+    },
+    {
+      "code": "116002",
+      "name": "مخزون المشروبات",
+      "parent_code": "116000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "balance_sheet",
+      "role": "beverage_inventory"
+    },
+    {
+      "code": "116003",
+      "name": "مخزون النظافة والتدبير الفندقي",
+      "parent_code": "116000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "balance_sheet",
+      "role": "housekeeping_inventory"
+    },
+    {
+      "code": "116004",
+      "name": "مخزون مستلزمات الضيافة والنزلاء",
+      "parent_code": "116000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "116005",
+      "name": "مخزون قطع الغيار والصيانة",
+      "parent_code": "116000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "116006",
+      "name": "مخزون البياضات والمفروشات غير المستخدمة",
+      "parent_code": "116000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "116007",
+      "name": "مخزون مستلزمات ومواد أخرى",
+      "parent_code": "116000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "117000",
+      "name": "مدفوعات مقدمة ومستحقات ضريبية",
+      "parent_code": "110000",
+      "posting": false,
+      "normal_side": "debit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "117001",
+      "name": "إيجارات مدفوعة مقدمًا",
+      "parent_code": "117000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "117002",
+      "name": "تأمينات مدفوعة مقدمًا",
+      "parent_code": "117000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "117003",
+      "name": "عقود تشغيل وصيانة مدفوعة مقدمًا",
+      "parent_code": "117000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "117004",
+      "name": "ضريبة قيمة مضافة على المدخلات قابلة للاسترداد",
+      "parent_code": "117000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "balance_sheet",
+      "role": "recoverable_input_vat",
+      "notes": "تستخدم فقط عند تحقق شروط الاسترداد وفق السياسة الضريبية المعتمدة؛ لا تفترض أي نسبة."
+    },
+    {
+      "code": "117005",
+      "name": "ضرائب خصم وتحصيل لنا لدى الغير",
+      "parent_code": "117000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "balance_sheet",
+      "role": "withholding_receivable"
+    },
+    {
+      "code": "117006",
+      "name": "دفعات مقدمة لضريبة الدخل",
+      "parent_code": "117000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "117007",
+      "name": "مصروفات مدفوعة مقدمًا أخرى",
+      "parent_code": "117000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "120000",
+      "name": "الأصول غير المتداولة",
+      "parent_code": "100000",
+      "posting": false,
+      "normal_side": "debit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "121000",
+      "name": "الأصول الثابتة بالتكلفة",
+      "parent_code": "120000",
+      "posting": false,
+      "normal_side": "debit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "121001",
+      "name": "الأراضي",
+      "parent_code": "121000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "121002",
+      "name": "المباني والمنشآت",
+      "parent_code": "121000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "121003",
+      "name": "تحسينات وتجهيزات المباني المستأجرة",
+      "parent_code": "121000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "121004",
+      "name": "الأثاث والمفروشات وتجهيزات الغرف",
+      "parent_code": "121000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "121005",
+      "name": "معدات المطابخ والمطاعم",
+      "parent_code": "121000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "121006",
+      "name": "معدات المغسلة",
+      "parent_code": "121000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "121007",
+      "name": "الحاسب الآلي ونقاط البيع والاتصالات",
+      "parent_code": "121000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "121008",
+      "name": "السيارات ووسائل النقل",
+      "parent_code": "121000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "121009",
+      "name": "الآلات والتكييف والمصاعد ومعدات المرافق",
+      "parent_code": "121000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "122000",
+      "name": "مجمع إهلاك الأصول الثابتة",
+      "parent_code": "120000",
+      "posting": false,
+      "normal_side": "credit",
+      "statement": "balance_sheet",
+      "notes": "حسابات مقابلة للأصول بطبيعة دائنة. لا يتم إهلاك الأراضي أو فرض عمر إنتاجي تلقائيًا."
+    },
+    {
+      "code": "122001",
+      "name": "مجمع إهلاك المباني والمنشآت",
+      "parent_code": "122000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "122002",
+      "name": "مجمع إهلاك تحسينات المباني المستأجرة",
+      "parent_code": "122000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "122003",
+      "name": "مجمع إهلاك الأثاث والمفروشات وتجهيزات الغرف",
+      "parent_code": "122000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "122004",
+      "name": "مجمع إهلاك معدات المطابخ والمطاعم",
+      "parent_code": "122000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "122005",
+      "name": "مجمع إهلاك معدات المغسلة",
+      "parent_code": "122000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "122006",
+      "name": "مجمع إهلاك الحاسب الآلي ونقاط البيع والاتصالات",
+      "parent_code": "122000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "122007",
+      "name": "مجمع إهلاك السيارات ووسائل النقل",
+      "parent_code": "122000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "122008",
+      "name": "مجمع إهلاك الآلات والتكييف والمصاعد والمرافق",
+      "parent_code": "122000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "123000",
+      "name": "مشروعات وأصول تحت التنفيذ",
+      "parent_code": "120000",
+      "posting": false,
+      "normal_side": "debit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "123001",
+      "name": "إنشاءات وتوسعات تحت التنفيذ",
+      "parent_code": "123000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "123002",
+      "name": "تجديدات وإحلالات تحت التنفيذ",
+      "parent_code": "123000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "123003",
+      "name": "معدات وتركيبات تحت التنفيذ",
+      "parent_code": "123000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "124000",
+      "name": "الأصول غير الملموسة وحقوق الاستخدام",
+      "parent_code": "120000",
+      "posting": false,
+      "normal_side": "debit",
+      "statement": "balance_sheet",
+      "notes": "تستخدم حقوق الاستخدام فقط إذا انطبقت السياسة المحاسبية والعقد؛ لا يفترض تفعيل معالجة عقود الإيجار من وجود الحساب."
+    },
+    {
+      "code": "124001",
+      "name": "برامج وتراخيص رأسمالية",
+      "parent_code": "124000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "124002",
+      "name": "حقوق استخدام مبانٍ مستأجرة",
+      "parent_code": "124000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "124003",
+      "name": "حقوق استخدام معدات مستأجرة",
+      "parent_code": "124000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "125000",
+      "name": "مجمع الإطفاء وانخفاض القيمة",
+      "parent_code": "120000",
+      "posting": false,
+      "normal_side": "credit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "125001",
+      "name": "مجمع إطفاء البرامج والتراخيص",
+      "parent_code": "125000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "125002",
+      "name": "مجمع استهلاك حقوق استخدام المباني",
+      "parent_code": "125000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "125003",
+      "name": "مجمع استهلاك حقوق استخدام المعدات",
+      "parent_code": "125000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "125004",
+      "name": "مجمع انخفاض قيمة الأصول الثابتة وغير الملموسة",
+      "parent_code": "125000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "balance_sheet",
+      "role": "asset_impairment_allowance",
+      "notes": "حساب مقابل للأصل، يستخدم فقط بناء على تقييم انخفاض قيمة موثق ومعتمد."
+    },
+    {
+      "code": "126000",
+      "name": "أصول طويلة الأجل أخرى",
+      "parent_code": "120000",
+      "posting": false,
+      "normal_side": "debit",
+      "statement": "balance_sheet",
+      "notes": "الاعتراف بالضريبة المؤجلة يحتاج تحليلًا وسياسة معتمدة، وليس رصيدًا آليًا."
+    },
+    {
+      "code": "126001",
+      "name": "تأمينات وودائع طويلة الأجل",
+      "parent_code": "126000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "126002",
+      "name": "أصول ضريبة دخل مؤجلة",
+      "parent_code": "126000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "200000",
+      "name": "الالتزامات",
+      "parent_code": null,
+      "posting": false,
+      "normal_side": "credit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "210000",
+      "name": "الالتزامات المتداولة",
+      "parent_code": "200000",
+      "posting": false,
+      "normal_side": "credit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "211000",
+      "name": "الموردون والدائنون التجاريون",
+      "parent_code": "210000",
+      "posting": false,
+      "normal_side": "credit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "211001",
+      "name": "حساب الموردين التشغيليين الرقابي",
+      "parent_code": "211000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "balance_sheet",
+      "role": "supplier_control",
+      "notes": "كل مورد يحتفظ بملفه وكشف حسابه في أستاذ مساعد؛ لا ينشأ حساب شجرة جديد لكل مورد. فاتورة المصروف أو الخدمة مستقلة عن إذن الاستلام."
+    },
+    {
+      "code": "211002",
+      "name": "حساب موردي الأصول الرقابي",
+      "parent_code": "211000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "balance_sheet",
+      "role": "capital_supplier_control"
+    },
+    {
+      "code": "211003",
+      "name": "محتجزات وضمانات مستحقة للموردين",
+      "parent_code": "211000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "212000",
+      "name": "دفعات وتأمينات العملاء والإيراد المؤجل",
+      "parent_code": "210000",
+      "posting": false,
+      "normal_side": "credit",
+      "statement": "balance_sheet",
+      "notes": "الدفعات المقدمة لا تعتبر إيرادًا مكتسبًا بمجرد التحصيل."
+    },
+    {
+      "code": "212001",
+      "name": "دفعات وتأمينات النزلاء المقدمة",
+      "parent_code": "212000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "balance_sheet",
+      "role": "guest_deposits"
+    },
+    {
+      "code": "212002",
+      "name": "دفعات مقدمة من الشركات والعملاء",
+      "parent_code": "212000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "212003",
+      "name": "دفعات مقدمة من وكلاء السياحة ومنصات الحجز",
+      "parent_code": "212000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "212004",
+      "name": "قسائم هدايا وإيرادات مؤجلة أخرى",
+      "parent_code": "212000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "213000",
+      "name": "الضرائب والرسوم المستحقة",
+      "parent_code": "210000",
+      "posting": false,
+      "normal_side": "credit",
+      "statement": "balance_sheet",
+      "notes": "لا توجد نسب أو حدود إعفاء أو حكم انطباق مفترض. تراجع الأسماء والقواعد مع المحاسب المسؤول عن الإقرارات."
+    },
+    {
+      "code": "213001",
+      "name": "ضريبة قيمة مضافة على المخرجات",
+      "parent_code": "213000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "balance_sheet",
+      "role": "output_vat"
+    },
+    {
+      "code": "213002",
+      "name": "صافي ضريبة القيمة المضافة المستحقة",
+      "parent_code": "213000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "balance_sheet",
+      "role": "vat_settlement",
+      "notes": "حساب تسوية دوري للمدخلات والمخرجات؛ لا تكرر نفس الضريبة عليه وعلى حسابات المصدر دون قيد تسوية."
+    },
+    {
+      "code": "213003",
+      "name": "ضريبة كسب العمل المستحقة",
+      "parent_code": "213000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "213004",
+      "name": "ضرائب خصم وتحصيل مستحقة للغير",
+      "parent_code": "213000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "balance_sheet",
+      "role": "withholding_payable"
+    },
+    {
+      "code": "213005",
+      "name": "ضريبة دخل مستحقة",
+      "parent_code": "213000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "213006",
+      "name": "رسوم محلية وسياحية مستحقة — إن انطبقت",
+      "parent_code": "213000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "214000",
+      "name": "مستحقات العاملين والتأمينات",
+      "parent_code": "210000",
+      "posting": false,
+      "normal_side": "credit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "214001",
+      "name": "أجور ورواتب مستحقة",
+      "parent_code": "214000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "balance_sheet",
+      "role": "payroll_payable"
+    },
+    {
+      "code": "214002",
+      "name": "اشتراكات تأمينات اجتماعية مستحقة",
+      "parent_code": "214000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "214003",
+      "name": "مكافآت وإجازات مستحقة",
+      "parent_code": "214000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "214004",
+      "name": "استقطاعات ومستحقات عاملين أخرى",
+      "parent_code": "214000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "214005",
+      "name": "مقابل خدمة محصل لحساب العاملين",
+      "parent_code": "214000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "balance_sheet",
+      "role": "employee_service_charge_payable",
+      "notes": "يبقى التزامًا في حدود حق العاملين حسب السياسة والعقد؛ لا يفترض كإيراد للفندق تلقائيًا."
+    },
+    {
+      "code": "215000",
+      "name": "المصروفات المستحقة",
+      "parent_code": "210000",
+      "posting": false,
+      "normal_side": "credit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "215001",
+      "name": "مرافق وطاقة مستحقة",
+      "parent_code": "215000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "215002",
+      "name": "أتعاب وخدمات مستحقة",
+      "parent_code": "215000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "215003",
+      "name": "فوائد تمويل مستحقة",
+      "parent_code": "215000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "215004",
+      "name": "مصروفات تشغيل أخرى مستحقة",
+      "parent_code": "215000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "216000",
+      "name": "تمويل والتزامات إيجار قصيرة الأجل",
+      "parent_code": "210000",
+      "posting": false,
+      "normal_side": "credit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "216001",
+      "name": "سحب على المكشوف وتسهيلات قصيرة الأجل",
+      "parent_code": "216000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "216002",
+      "name": "أقساط قروض مستحقة خلال سنة",
+      "parent_code": "216000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "216003",
+      "name": "التزامات إيجار مستحقة خلال سنة",
+      "parent_code": "216000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "217000",
+      "name": "أرصدة دائنة متداولة أخرى",
+      "parent_code": "210000",
+      "posting": false,
+      "normal_side": "credit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "217001",
+      "name": "تأمينات قابلة للرد للغير",
+      "parent_code": "217000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "217002",
+      "name": "مبالغ محصلة تحت التحديد",
+      "parent_code": "217000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "217003",
+      "name": "دائنون آخرون",
+      "parent_code": "217000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "220000",
+      "name": "الالتزامات غير المتداولة",
+      "parent_code": "200000",
+      "posting": false,
+      "normal_side": "credit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "220001",
+      "name": "قروض وتسهيلات طويلة الأجل",
+      "parent_code": "220000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "220002",
+      "name": "التزامات عقود إيجار طويلة الأجل",
+      "parent_code": "220000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "220003",
+      "name": "تأمينات وودائع للغير طويلة الأجل",
+      "parent_code": "220000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "220004",
+      "name": "مخصصات منافع عاملين والتزامات طويلة الأجل",
+      "parent_code": "220000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "220005",
+      "name": "التزامات ضريبة دخل مؤجلة",
+      "parent_code": "220000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "300000",
+      "name": "حقوق الملكية",
+      "parent_code": null,
+      "posting": false,
+      "normal_side": "credit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "300001",
+      "name": "رأس المال",
+      "parent_code": "300000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "300002",
+      "name": "مسحوبات وتوزيعات الملاك",
+      "parent_code": "300000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "300003",
+      "name": "احتياطيات حقوق الملكية",
+      "parent_code": "300000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "300004",
+      "name": "أرباح مرحلة",
+      "parent_code": "300000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "balance_sheet",
+      "role": "retained_earnings"
+    },
+    {
+      "code": "300005",
+      "name": "خسائر مرحلة",
+      "parent_code": "300000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "balance_sheet"
+    },
+    {
+      "code": "300006",
+      "name": "نتيجة العام الجاري",
+      "parent_code": "300000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "balance_sheet",
+      "role": "current_year_result"
+    },
+    {
+      "code": "400000",
+      "name": "الإيرادات التشغيلية",
+      "parent_code": null,
+      "posting": false,
+      "normal_side": "credit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "410000",
+      "name": "إيرادات الغرف والإقامة",
+      "parent_code": "400000",
+      "posting": false,
+      "normal_side": "credit",
+      "statement": "income_statement",
+      "notes": "يفصل مركز الإيراد/القسم ومصدر الحجز كأبعاد تحليلية؛ لا يتكرر الحساب لكل غرفة أو شركة أو قناة حجز."
+    },
+    {
+      "code": "410001",
+      "name": "إيرادات الإقامة بالغرف",
+      "parent_code": "410000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "income_statement",
+      "role": "room_revenue"
+    },
+    {
+      "code": "410002",
+      "name": "إيرادات الاستخدام النهاري للغرف",
+      "parent_code": "410000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "410003",
+      "name": "إيرادات الأسرة الإضافية",
+      "parent_code": "410000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "410004",
+      "name": "رسوم تأخير ومغادرة مبكرة وإلغاء مستحقة",
+      "parent_code": "410000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "420000",
+      "name": "إيرادات الأغذية والمشروبات",
+      "parent_code": "400000",
+      "posting": false,
+      "normal_side": "credit",
+      "statement": "income_statement",
+      "notes": "المطعم والرووف لاونج وخدمة الغرف مراكز إيراد وتكلفة مستقلة؛ تحلل الأغذية والمشروبات حسب المركز دون نسخ شجرة الحسابات لكل منفذ."
+    },
+    {
+      "code": "420001",
+      "name": "إيرادات الأغذية",
+      "parent_code": "420000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "income_statement",
+      "role": "food_revenue"
+    },
+    {
+      "code": "420002",
+      "name": "إيرادات المشروبات",
+      "parent_code": "420000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "income_statement",
+      "role": "beverage_revenue"
+    },
+    {
+      "code": "420003",
+      "name": "إيرادات الحفلات والمناسبات",
+      "parent_code": "420000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "420004",
+      "name": "إيرادات الميني بار",
+      "parent_code": "420000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "430000",
+      "name": "إيرادات خدمات الفندق الأخرى",
+      "parent_code": "400000",
+      "posting": false,
+      "normal_side": "credit",
+      "statement": "income_statement",
+      "notes": "تخضع الرسوم والعمولات وحصة الخدمة للاعتراف وفق العقود والسياسة المحاسبية المعتمدة."
+    },
+    {
+      "code": "430001",
+      "name": "إيرادات المغسلة",
+      "parent_code": "430000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "430002",
+      "name": "إيرادات النادي الصحي والسبا",
+      "parent_code": "430000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "430003",
+      "name": "إيرادات النقل والاستقبال",
+      "parent_code": "430000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "430004",
+      "name": "إيرادات انتظار السيارات",
+      "parent_code": "430000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "430005",
+      "name": "إيرادات الاتصالات وخدمات الأعمال",
+      "parent_code": "430000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "430006",
+      "name": "إيرادات خدمات أخرى",
+      "parent_code": "430000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "430007",
+      "name": "حصة الفندق المكتسبة من مقابل الخدمة — إن وجدت",
+      "parent_code": "430000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "440000",
+      "name": "خصومات ومردودات الإيرادات",
+      "parent_code": "400000",
+      "posting": false,
+      "normal_side": "debit",
+      "statement": "income_statement",
+      "notes": "حسابات مقابلة للإيراد بطبيعة مدينة. رد دفعة مقدمة غير مكتسبة يسوى الالتزام ولا يعالج تلقائيًا كمردود إيراد."
+    },
+    {
+      "code": "440001",
+      "name": "خصومات إيرادات الغرف",
+      "parent_code": "440000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "440002",
+      "name": "مردودات وتسويات إيرادات الغرف",
+      "parent_code": "440000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "440003",
+      "name": "خصومات إيرادات الأغذية والمشروبات",
+      "parent_code": "440000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "440004",
+      "name": "مردودات وتسويات إيرادات الأغذية والمشروبات",
+      "parent_code": "440000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "500000",
+      "name": "التكاليف والمصروفات المباشرة للأقسام",
+      "parent_code": null,
+      "posting": false,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "510000",
+      "name": "المصروفات المباشرة لقسم الغرف",
+      "parent_code": "500000",
+      "posting": false,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "510001",
+      "name": "أجور قسم الغرف والتدبير الفندقي",
+      "parent_code": "510000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "510002",
+      "name": "مزايا وتأمينات العاملين بقسم الغرف",
+      "parent_code": "510000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "510003",
+      "name": "مستهلكات الضيافة والتدبير الفندقي",
+      "parent_code": "510000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "510004",
+      "name": "غسيل وبياضات وخدمات خارجية للغرف",
+      "parent_code": "510000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "510005",
+      "name": "عمولات حجوزات وإقامة مستحقة",
+      "parent_code": "510000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "520000",
+      "name": "تكلفة ومصروفات الأغذية والمشروبات",
+      "parent_code": "500000",
+      "posting": false,
+      "normal_side": "debit",
+      "statement": "income_statement",
+      "notes": "تكلفة المطعم والرووف لاونج والحفلات وخدمة الغرف تحلل بمراكز التكلفة. توقيت تحميل المخزون على الاستهلاك يتفق عليه عند بناء دورة المخازن."
+    },
+    {
+      "code": "520001",
+      "name": "تكلفة الأغذية المستهلكة",
+      "parent_code": "520000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement",
+      "role": "food_cost"
+    },
+    {
+      "code": "520002",
+      "name": "تكلفة المشروبات المستهلكة",
+      "parent_code": "520000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement",
+      "role": "beverage_cost"
+    },
+    {
+      "code": "520003",
+      "name": "أجور المطابخ والمطاعم والمنافذ",
+      "parent_code": "520000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "520004",
+      "name": "مزايا وتأمينات العاملين بالأغذية والمشروبات",
+      "parent_code": "520000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "520005",
+      "name": "مستهلكات وأدوات تشغيل المطاعم",
+      "parent_code": "520000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "520006",
+      "name": "خدمات تشغيل خارجية للأغذية والمشروبات",
+      "parent_code": "520000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "530000",
+      "name": "المصروفات المباشرة للنادي الصحي والسبا",
+      "parent_code": "500000",
+      "posting": false,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "530001",
+      "name": "أجور ومزايا العاملين بالنادي الصحي",
+      "parent_code": "530000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "530002",
+      "name": "مستهلكات تشغيل النادي الصحي",
+      "parent_code": "530000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "530003",
+      "name": "خدمات ومقدمو خدمات خارجيون للسبا",
+      "parent_code": "530000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "540000",
+      "name": "المصروفات المباشرة للمغسلة",
+      "parent_code": "500000",
+      "posting": false,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "540001",
+      "name": "أجور ومزايا العاملين بالمغسلة",
+      "parent_code": "540000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "540002",
+      "name": "كيماويات ومستهلكات المغسلة",
+      "parent_code": "540000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "540003",
+      "name": "غسيل وخدمات مغسلة خارجية",
+      "parent_code": "540000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "550000",
+      "name": "مصروفات مباشرة لخدمات أخرى",
+      "parent_code": "500000",
+      "posting": false,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "550001",
+      "name": "تكلفة خدمات النقل والاستقبال",
+      "parent_code": "550000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "550002",
+      "name": "أجور ومزايا تشغيل خدمات أخرى",
+      "parent_code": "550000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "550003",
+      "name": "مصروفات مباشرة أخرى حسب المركز",
+      "parent_code": "550000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "560000",
+      "name": "فروق وهالك المخزون",
+      "parent_code": "500000",
+      "posting": false,
+      "normal_side": "debit",
+      "statement": "income_statement",
+      "notes": "الفروق والهالك تحتاج مستندًا واعتمادًا؛ لا يصرف المخزون أو تسوى الفروق بمجرد تعريف الحساب."
+    },
+    {
+      "code": "560001",
+      "name": "فروق جرد مخزون",
+      "parent_code": "560000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "560002",
+      "name": "هالك وتالف أغذية",
+      "parent_code": "560000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "560003",
+      "name": "هالك وتالف مشروبات",
+      "parent_code": "560000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "560004",
+      "name": "انخفاض قيمة ومخزون متقادم",
+      "parent_code": "560000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "600000",
+      "name": "مصروفات تشغيل وإدارة غير موزعة",
+      "parent_code": null,
+      "posting": false,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "610000",
+      "name": "الإدارة والشؤون العامة",
+      "parent_code": "600000",
+      "posting": false,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "610001",
+      "name": "أجور الإدارة والشؤون العامة",
+      "parent_code": "610000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "610002",
+      "name": "مزايا وتأمينات العاملين بالإدارة",
+      "parent_code": "610000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "610003",
+      "name": "أتعاب مراجعة ومحاسبة واستشارات",
+      "parent_code": "610000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "610004",
+      "name": "مطبوعات وأدوات مكتبية",
+      "parent_code": "610000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "610005",
+      "name": "رسوم تراخيص واشتراكات إدارية",
+      "parent_code": "610000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "610006",
+      "name": "عمولات بنكية تشغيلية وشبكات دفع",
+      "parent_code": "610000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement",
+      "role": "payment_processing_fees",
+      "notes": "رسوم معالجة التحصيلات تعرض كمصروف تشغيل حسب السياسة، ولا تخصم من إجمالي الإيراد تلقائيًا. رسوم وفوائد التمويل لها حسابات مستقلة."
+    },
+    {
+      "code": "620000",
+      "name": "المبيعات والتسويق",
+      "parent_code": "600000",
+      "posting": false,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "620001",
+      "name": "أجور ومزايا المبيعات والتسويق",
+      "parent_code": "620000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "620002",
+      "name": "دعاية وإعلان وتسويق إلكتروني",
+      "parent_code": "620000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "620003",
+      "name": "علاقات عامة وضيافة وتسويق",
+      "parent_code": "620000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "620004",
+      "name": "عقود وتكاليف أنظمة التوزيع والحجز",
+      "parent_code": "620000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "630000",
+      "name": "الصيانة والهندسة",
+      "parent_code": "600000",
+      "posting": false,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "630001",
+      "name": "أجور الصيانة والهندسة",
+      "parent_code": "630000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "630002",
+      "name": "مزايا وتأمينات العاملين بالصيانة",
+      "parent_code": "630000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "630003",
+      "name": "قطع غيار ومستهلكات صيانة",
+      "parent_code": "630000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "630004",
+      "name": "عقود ومقاولو صيانة خارجيون",
+      "parent_code": "630000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "640000",
+      "name": "المرافق والطاقة والاتصالات",
+      "parent_code": "600000",
+      "posting": false,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "640001",
+      "name": "كهرباء",
+      "parent_code": "640000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "640002",
+      "name": "مياه وصرف صحي",
+      "parent_code": "640000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "640003",
+      "name": "غاز ووقود تشغيل",
+      "parent_code": "640000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "640004",
+      "name": "هاتف وإنترنت واتصالات",
+      "parent_code": "640000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "650000",
+      "name": "تقنية المعلومات والأنظمة",
+      "parent_code": "600000",
+      "posting": false,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "650001",
+      "name": "اشتراكات وتراخيص برامج تشغيلية",
+      "parent_code": "650000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "650002",
+      "name": "دعم فني وصيانة أنظمة",
+      "parent_code": "650000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "650003",
+      "name": "حماية ونسخ احتياطي وخدمات تقنية",
+      "parent_code": "650000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "660000",
+      "name": "تكاليف إشغال العقار والحماية",
+      "parent_code": "600000",
+      "posting": false,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "660001",
+      "name": "إيجارات تشغيلية ومصروفات إشغال",
+      "parent_code": "660000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "660002",
+      "name": "تأمينات ممتلكات ومسؤولية",
+      "parent_code": "660000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "660003",
+      "name": "ضرائب عقارية ورسوم ملكية",
+      "parent_code": "660000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "660004",
+      "name": "أمن وحراسة وخدمات حماية",
+      "parent_code": "660000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "670000",
+      "name": "الإهلاك والإطفاء",
+      "parent_code": "600000",
+      "posting": false,
+      "normal_side": "debit",
+      "statement": "income_statement",
+      "notes": "نسب وأعمار الإهلاك وطريقة التوزيع على مراكز التكلفة تحدد في دورة الأصول، ولا توجد نسبة افتراضية."
+    },
+    {
+      "code": "670001",
+      "name": "مصروف إهلاك الأصول الثابتة",
+      "parent_code": "670000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "670002",
+      "name": "مصروف إطفاء البرامج وحقوق الاستخدام",
+      "parent_code": "670000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "680000",
+      "name": "مصروفات تشغيل مشتركة أخرى",
+      "parent_code": "600000",
+      "posting": false,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "680001",
+      "name": "تدريب وتنمية العاملين",
+      "parent_code": "680000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "680002",
+      "name": "انتقالات وإعاشة ومزايا مشتركة",
+      "parent_code": "680000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "680003",
+      "name": "مصروفات تشغيل أخرى",
+      "parent_code": "680000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement",
+      "role": "other_operating_expense",
+      "notes": "يحدد حساب البند المناسب قبل الترحيل؛ هذا الحساب ليس تصريحًا بترحيل كل المصروفات دون تصنيف."
+    },
+    {
+      "code": "680004",
+      "name": "مصروف الخسائر الائتمانية للعملاء",
+      "parent_code": "680000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement",
+      "role": "credit_loss_expense",
+      "notes": "يقابل مخصص خسائر العملاء عند توافر تقييم معتمد؛ لا يلغي رصيد العميل تلقائيًا."
+    },
+    {
+      "code": "700000",
+      "name": "إيرادات ومكاسب أخرى",
+      "parent_code": null,
+      "posting": false,
+      "normal_side": "credit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "710000",
+      "name": "دخل غير تشغيلي",
+      "parent_code": "700000",
+      "posting": false,
+      "normal_side": "credit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "710001",
+      "name": "إيرادات فوائد وودائع",
+      "parent_code": "710000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "710002",
+      "name": "إيرادات إيجار واستغلال مساحات",
+      "parent_code": "710000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "710003",
+      "name": "استردادات وتعويضات مكتسبة",
+      "parent_code": "710000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "720000",
+      "name": "مكاسب وتسويات أخرى",
+      "parent_code": "700000",
+      "posting": false,
+      "normal_side": "credit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "720001",
+      "name": "مكاسب فروق عملة",
+      "parent_code": "720000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "720002",
+      "name": "أرباح بيع واستبعاد أصول",
+      "parent_code": "720000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "720003",
+      "name": "إيرادات ومكاسب أخرى",
+      "parent_code": "720000",
+      "posting": true,
+      "normal_side": "credit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "800000",
+      "name": "مصروفات تمويل وضريبة وخسائر أخرى",
+      "parent_code": null,
+      "posting": false,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "810000",
+      "name": "تكاليف تمويل وخدمات دفع",
+      "parent_code": "800000",
+      "posting": false,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "810001",
+      "name": "فوائد قروض وتسهيلات",
+      "parent_code": "810000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "810002",
+      "name": "فوائد التزامات عقود الإيجار",
+      "parent_code": "810000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "810003",
+      "name": "مصروفات تمويل ورسوم تسهيلات أخرى",
+      "parent_code": "810000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement",
+      "role": "other_finance_charges"
+    },
+    {
+      "code": "820000",
+      "name": "خسائر فروق العملة",
+      "parent_code": "800000",
+      "posting": false,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "820001",
+      "name": "خسائر تقييم وتسوية عملات أجنبية",
+      "parent_code": "820000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "830000",
+      "name": "مصروف ضريبة الدخل",
+      "parent_code": "800000",
+      "posting": false,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "830001",
+      "name": "مصروف ضريبة الدخل الجارية",
+      "parent_code": "830000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "830002",
+      "name": "مصروف أو إيراد ضريبة دخل مؤجلة",
+      "parent_code": "830000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "840000",
+      "name": "خسائر أخرى",
+      "parent_code": "800000",
+      "posting": false,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "840001",
+      "name": "خسائر استبعاد أصول وخسائر غير تشغيلية",
+      "parent_code": "840000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement"
+    },
+    {
+      "code": "840002",
+      "name": "خسائر انخفاض قيمة الأصول الثابتة وغير الملموسة",
+      "parent_code": "840000",
+      "posting": true,
+      "normal_side": "debit",
+      "statement": "income_statement",
+      "role": "asset_impairment_expense"
+    }
+  ],
+  "mappings": [
+    {
+      "module": "الموردون",
+      "role": "payable_control",
+      "label": "الحساب الرقابي للموردين التشغيليين",
+      "account_code": "211001"
+    },
+    {
+      "module": "الموردون",
+      "role": "capital_payable_control",
+      "label": "الحساب الرقابي لموردي الأصول",
+      "account_code": "211002"
+    },
+    {
+      "module": "الموردون",
+      "role": "supplier_advances",
+      "label": "دفعات مقدمة للموردين",
+      "account_code": "115004"
+    },
+    {
+      "module": "الموردون",
+      "role": "default_direct_expense",
+      "label": "مصروف مباشر مقترح — يلزم تصنيف البند قبل الترحيل",
+      "account_code": "680003",
+      "allowed_classes": [
+        "5",
+        "6",
+        "8"
+      ]
+    },
+    {
+      "module": "العملاء",
+      "role": "receivable_control",
+      "label": "الحساب الرقابي للشركات والعملاء",
+      "account_code": "114002"
+    },
+    {
+      "module": "العملاء",
+      "role": "guest_ledger_control",
+      "label": "الحساب الرقابي للنزلاء",
+      "account_code": "114001"
+    },
+    {
+      "module": "العملاء",
+      "role": "agent_receivable_control",
+      "label": "الحساب الرقابي لوكلاء السياحة",
+      "account_code": "114003"
+    },
+    {
+      "module": "العملاء",
+      "role": "guest_deposits",
+      "label": "دفعات وتأمينات النزلاء المقدمة",
+      "account_code": "212001"
+    },
+    {
+      "module": "الخزينة",
+      "role": "revenue_safe",
+      "label": "خزينة الإيرادات اليومية",
+      "account_code": "111001"
+    },
+    {
+      "module": "الخزينة",
+      "role": "main_expense_safe",
+      "label": "خزينة المصروفات والعهد",
+      "account_code": "111002"
+    },
+    {
+      "module": "الخزينة",
+      "role": "petty_cash",
+      "label": "عهدة المصروفات النثرية",
+      "account_code": "111003"
+    },
+    {
+      "module": "الخزينة",
+      "role": "cash_transfer_clearing",
+      "label": "نقدية وتحويلات بالطريق",
+      "account_code": "111005"
+    },
+    {
+      "module": "الخزينة",
+      "role": "operating_custodies",
+      "label": "العهد التشغيلية تحت التسوية",
+      "account_code": "115003"
+    },
+    {
+      "module": "البنوك",
+      "role": "local_bank",
+      "label": "الحساب البنكي المحلي العام — يحدد البنك فعليًا لاحقًا",
+      "account_code": "112001"
+    },
+    {
+      "module": "البنوك",
+      "role": "foreign_bank",
+      "label": "حساب البنك بالعملات الأجنبية",
+      "account_code": "112002"
+    },
+    {
+      "module": "البنوك",
+      "role": "visa_clearing",
+      "label": "تسوية تحصيلات Visa",
+      "account_code": "113001"
+    },
+    {
+      "module": "البنوك",
+      "role": "mastercard_clearing",
+      "label": "تسوية تحصيلات MasterCard",
+      "account_code": "113002"
+    },
+    {
+      "module": "البنوك",
+      "role": "meeza_clearing",
+      "label": "تسوية تحصيلات Meeza",
+      "account_code": "113003"
+    },
+    {
+      "module": "البنوك",
+      "role": "instapay_clearing",
+      "label": "تسوية تحصيلات InstaPay",
+      "account_code": "113004"
+    },
+    {
+      "module": "البنوك",
+      "role": "processing_fees",
+      "label": "عمولات تشغيلية للبنوك وشبكات الدفع",
+      "account_code": "610006"
+    },
+    {
+      "module": "الإيرادات",
+      "role": "room_revenue",
+      "label": "إيرادات الإقامة بالغرف",
+      "account_code": "410001"
+    },
+    {
+      "module": "الإيرادات",
+      "role": "food_revenue",
+      "label": "إيرادات الأغذية حسب مركز الإيراد",
+      "account_code": "420001"
+    },
+    {
+      "module": "الإيرادات",
+      "role": "beverage_revenue",
+      "label": "إيرادات المشروبات حسب مركز الإيراد",
+      "account_code": "420002"
+    },
+    {
+      "module": "المخازن",
+      "role": "food_inventory",
+      "label": "حساب مخزون الأغذية",
+      "account_code": "116001"
+    },
+    {
+      "module": "المخازن",
+      "role": "beverage_inventory",
+      "label": "حساب مخزون المشروبات",
+      "account_code": "116002"
+    },
+    {
+      "module": "المخازن",
+      "role": "food_consumption",
+      "label": "تكلفة الأغذية المستهلكة",
+      "account_code": "520001",
+      "allowed_classes": [
+        "5",
+        "6"
+      ]
+    },
+    {
+      "module": "المخازن",
+      "role": "beverage_consumption",
+      "label": "تكلفة المشروبات المستهلكة",
+      "account_code": "520002",
+      "allowed_classes": [
+        "5",
+        "6"
+      ]
+    },
+    {
+      "module": "الأصول",
+      "role": "buildings_cost",
+      "label": "تكلفة المباني",
+      "account_code": "121002"
+    },
+    {
+      "module": "الأصول",
+      "role": "buildings_accumulated_depreciation",
+      "label": "مجمع إهلاك المباني",
+      "account_code": "122001"
+    },
+    {
+      "module": "الأصول",
+      "role": "depreciation_expense",
+      "label": "مصروف إهلاك الأصول الثابتة",
+      "account_code": "670001",
+      "allowed_classes": [
+        "5",
+        "6"
+      ]
+    },
+    {
+      "module": "الرواتب",
+      "role": "payroll_payable",
+      "label": "رواتب وأجور مستحقة",
+      "account_code": "214001"
+    },
+    {
+      "module": "الرواتب",
+      "role": "employee_advances",
+      "label": "سلف الموظفين",
+      "account_code": "115001"
+    },
+    {
+      "module": "الرواتب",
+      "role": "employee_service_charge",
+      "label": "مقابل خدمة محصل لحساب العاملين",
+      "account_code": "214005"
+    },
+    {
+      "module": "الضرائب",
+      "role": "recoverable_input_vat",
+      "label": "ضريبة مدخلات قابلة للاسترداد وفق السياسة",
+      "account_code": "117004"
+    },
+    {
+      "module": "الضرائب",
+      "role": "output_vat",
+      "label": "ضريبة المخرجات",
+      "account_code": "213001"
+    },
+    {
+      "module": "الضرائب",
+      "role": "vat_settlement",
+      "label": "تسوية ضريبة القيمة المضافة",
+      "account_code": "213002"
+    },
+    {
+      "module": "الضرائب",
+      "role": "withholding_payable",
+      "label": "خصم وتحصيل مستحق للغير",
+      "account_code": "213004"
+    },
+    {
+      "module": "الضرائب",
+      "role": "withholding_receivable",
+      "label": "خصم وتحصيل لنا لدى الغير",
+      "account_code": "117005"
+    },
+    {
+      "module": "الإقفال",
+      "role": "current_year_result",
+      "label": "نتيجة العام الجاري",
+      "account_code": "300006"
+    },
+    {
+      "module": "الإقفال",
+      "role": "retained_earnings",
+      "label": "الأرباح المرحلة",
+      "account_code": "300004"
+    },
+    {
+      "module": "العملاء",
+      "role": "credit_loss_allowance",
+      "label": "مخصص الخسائر الائتمانية للعملاء",
+      "account_code": "114005"
+    },
+    {
+      "module": "العملاء",
+      "role": "credit_loss_expense",
+      "label": "مصروف الخسائر الائتمانية المعتمد",
+      "account_code": "680004",
+      "allowed_classes": [
+        "6",
+        "8"
+      ]
+    },
+    {
+      "module": "الأصول",
+      "role": "asset_impairment_expense",
+      "label": "خسائر انخفاض قيمة الأصول المعتمدة",
+      "account_code": "840002",
+      "allowed_classes": [
+        "6",
+        "8"
+      ]
+    }
+  ]
+}
