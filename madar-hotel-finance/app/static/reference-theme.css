@@ -10,3 +10,7 @@ body.reference-theme dialog{color-scheme:light;background:#fbfcff;color:#1d3550;
 @media(prefers-reduced-motion:reduce){.reference-theme *{transition:none!important;animation:none!important}}
 @media print{body.reference-theme{background:#fff!important;color:#222!important;color-scheme:light}.reference-theme .main,.reference-theme .entry-actions{display:none!important}.reference-theme .print-only{display:block!important;background:#fff!important;color:#222!important}.reference-theme .print-only h1{color:#173b34!important}.reference-theme .print-only p{color:#444!important}.reference-theme .print-only table{color:#222!important}.reference-theme .print-only th{background:#f2f4f7!important;color:#333!important;border-color:#ddd!important}.reference-theme .print-only td{border-color:#ddd!important}}
 .reference-theme button[hidden],.reference-theme [data-art][hidden]{display:none!important}
+
+/* Supplier details and saved items share one entry point. */
+.reference-theme .stats .stat:last-child{grid-column:1 / -1}
+.reference-theme #modal h3{font-size:13px;color:#334e68;margin-top:23px}

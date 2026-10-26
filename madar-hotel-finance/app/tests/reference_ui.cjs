@@ -83,6 +83,16 @@ async function perceivedBackground(page, selector) {
     assert.equal(await page.locator('select').count(), 0, 'There are no dropdown selects');
     assert.equal(await page.locator('#modules [data-page="invoices"]').count(), 0,
       'Supplier invoices are not a separate root module');
+    assert.equal(await page.locator('.topnav [data-page="supplier"]').count(), 0,
+      'Supplier navigation is not duplicated beside Home');
+    assert.equal(await page.locator('#stats .stat').count(), 3,
+      'The dashboard uses three consolidated indicators');
+    assert.equal(await page.locator('#stats [data-page="supplier"]').count(), 1,
+      'There is one consolidated supplier indicator');
+    assert.equal(await page.locator('#stats [data-page="products"]').count(), 0,
+      'Supplier items do not duplicate the supplier indicator');
+    assert.equal(await page.locator('[data-supplier-tab="products"]').count(), 0,
+      'Saved supplier items are managed in the supplier file');
     assert.ok(await perceivedBackground(page, 'body') < 75, 'Dashboard has a dark background');
 
     const stamp = Date.now().toString(36);
@@ -117,7 +127,35 @@ async function perceivedBackground(page, selector) {
       formatMoney(updatedDashboard.total_cents));
     await page.screenshot({ path: path.join(output, 'reference-dashboard.png'), fullPage: true });
 
-    await page.locator('[data-page="supplier"]').first().click();
+    await page.locator('#modules [data-page="supplier"]').click();
+    await page.locator(`[data-supplier-file="${supplier.id}"]`).click();
+    await page.waitForSelector('#modal[open]');
+    assert.ok((await page.locator('#modal-body').innerText()).includes(product.name),
+      'The supplier file keeps the existing saved item visible');
+    await page.locator(`#modal [data-product-supplier="${supplier.id}"]`).click();
+    await page.waitForSelector('#picker-window[open]');
+    assert.match(await page.locator('#picker-title').innerText(), /القسم الافتراضي/,
+      'Adding from a supplier file skips the supplier picker');
+    await page.locator(`[data-pick="${department.id}"]`).click();
+    await page.waitForSelector('#record-window[open]');
+    assert.ok((await page.locator('#record-title').innerText()).includes(supplier.name),
+      'The new item form identifies the preselected supplier');
+    const addedItemName = 'خدمة من ملف المورد ' + stamp;
+    await page.locator('#record-form [name="name"]').fill(addedItemName);
+    await page.locator('#record-form [name="unit"]').fill('شهر');
+    await page.locator('#record-form [name="price"]').fill('250.00');
+    await page.locator('#record-form button[type="submit"]').click();
+    await page.waitForFunction(name => document.querySelector('#modal').open &&
+      document.querySelector('#modal-body').innerText.includes(name), addedItemName);
+    assert.ok((await page.locator('#modal-body').innerText()).includes(product.name),
+      'Adding a new item preserves the previously saved item');
+    const afterItemSave = await api(page, 'bootstrap');
+    const addedItem = afterItemSave.products.find(item => item.name === addedItemName);
+    assert.ok(addedItem, 'The added supplier item was persisted');
+    assert.equal(addedItem.supplier_id, supplier.id, 'The item keeps the preselected supplier');
+    assert.equal(addedItem.department_id, department.id, 'The selected department was persisted');
+    assert.equal(addedItem.price_cents, 25000, 'The saved item price is accurate');
+    await page.locator('#modal [data-close="modal"]').click();
     await page.locator('#supplier [data-new-invoice]').click();
     await page.waitForSelector('#entry-window[open]');
     assert.equal(await page.locator('#cancel-invoice').isVisible(), false,
@@ -147,13 +185,13 @@ async function perceivedBackground(page, selector) {
     await page.setViewportSize({ width: 390, height: 844 });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false,
       'The dashboard does not overflow the phone viewport');
-    await page.locator('[data-page="supplier"]').first().click();
+    await page.locator('#modules [data-page="supplier"]').click();
     await page.locator('#supplier [data-new-invoice]').click();
     assert.equal(await page.locator('#entry-window').evaluate(element => element.scrollWidth > element.clientWidth), false,
       'The input window does not overflow on a phone');
     await page.keyboard.press('Escape');
     assert.deepEqual(errors, [], 'No JavaScript page errors');
-    console.log('PASS reference UI: dark dashboard, hotel poster, single supplier module, API-backed refresh, light visual entry, discard Escape and phone width.');
+    console.log('PASS reference UI: consolidated supplier navigation and metrics, supplier-file item save, API-backed refresh, light entry, discard Escape and phone width.');
   } finally {
     await browser.close();
   }
