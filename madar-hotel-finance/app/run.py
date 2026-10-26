@@ -34,7 +34,7 @@ def main():
     worker=threading.Thread(target=http.serve_forever,daemon=True,name='am-local-data')
     worker.start()
     try:
-        window=webview.create_window(TITLE,f'http://127.0.0.1:{http.server_port}',width=1440,height=1000,min_size=(980,720),background_color='#f6f5f2',text_select=True,confirm_close=True)
+        window=webview.create_window(TITLE,f'http://127.0.0.1:{http.server_port}',width=1440,height=1000,min_size=(980,720),background_color='#03111b',text_select=True,confirm_close=True)
         if sys.platform.startswith('linux'):
             from desktop_print import configure
             window.events.before_show+=lambda:configure(window)
