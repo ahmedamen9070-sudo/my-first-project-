@@ -1,0 +1,4 @@
+-r requirements-desktop.txt
+QtPy==2.4.3
+PyQt6==6.11.0
+PyQt6-WebEngine==6.11.0

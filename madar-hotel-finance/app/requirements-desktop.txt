@@ -1,0 +1,2 @@
+# Windows uses the native Edge WebView2 engine; Linux/macOS use the supported pywebview backend.
+pywebview==6.2.1

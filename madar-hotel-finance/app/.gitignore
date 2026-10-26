@@ -2,3 +2,4 @@ data/
 __pycache__/
 tests/*.png
 tests/*.pdf
+.desktop-venv/
