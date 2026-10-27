@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """A&M Accounting Hotel for Audit &Control development application: single operator, isolated draft purchasing workflow."""
 import argparse, json, os, sqlite3, secrets, mimetypes, shutil, tempfile
-import accounting, payables, supplier_payments
+import accounting, payables, supplier_payments, supplier_settlements, supplier_adjustments
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -40,6 +40,8 @@ def init():
         accounting.initialize(db)
         payables.initialize(db)
         supplier_payments.initialize(db)
+        supplier_settlements.initialize(db)
+        supplier_adjustments.initialize(db)
 
 def now(): return datetime.now(timezone.utc).isoformat(timespec='seconds')
 def code(db,kind,prefix):
@@ -220,6 +222,23 @@ class Handler(BaseHTTPRequestHandler):
                         return self.send(200,supplier_payments.list_payments(db,ident(int(supplier)) if supplier else None))
                     if len(parts)==3 and parts[:2]==['api','supplier-payments']:
                         return self.send(200,supplier_payments.get_payment(db,ident(int(parts[2]))))
+                    if path=='/api/supplier-credit-sources':
+                        return self.send(200,supplier_settlements.source_balances(db,ident(int(args.get('supplier_id',[''])[0])),args.get('as_of',[None])[0]))
+                    if path=='/api/supplier-settlements':
+                        supplier=args.get('supplier_id',[''])[0]
+                        return self.send(200,supplier_settlements.list_settlements(db,ident(int(supplier)) if supplier else None))
+                    if len(parts)==3 and parts[:2]==['api','supplier-settlements']:
+                        return self.send(200,supplier_settlements.detail(db,ident(int(parts[2]))))
+                    if path=='/api/supplier-refunds':
+                        supplier=args.get('supplier_id',[''])[0]
+                        return self.send(200,supplier_adjustments.list_refunds(db,ident(int(supplier)) if supplier else None))
+                    if len(parts)==3 and parts[:2]==['api','supplier-refunds']:
+                        return self.send(200,supplier_adjustments.get_refund(db,ident(int(parts[2]))))
+                    if len(parts)==4 and parts[:2]==['api','supplier-payments'] and parts[3] in ('cheque-events','events'):
+                        return self.send(200,[{key:value for key,value in row.items() if key!='request_fingerprint'} for row in supplier_adjustments.cheque_events(db,ident(int(parts[2])),args.get('as_of',[None])[0])])
+                    if path=='/api/supplier-reconciliation':
+                        import supplier_reconciliation
+                        return self.send(200,supplier_reconciliation.report(db,args.get('as_of',[None])[0]))
                     if path=='/api/supplier-returns':
                         supplier=args.get('supplier_id',[''])[0]
                         return self.send(200,payables.list_returns(db,ident(int(supplier)) if supplier else None))
@@ -315,6 +334,28 @@ class Handler(BaseHTTPRequestHandler):
                     result=supplier_payments.approve_payment(db,ident(int(parts[2])),data)
                 elif len(parts)==4 and parts[:2]==['api','supplier-payments'] and parts[3]=='clear' and method=='POST':
                     result=supplier_payments.clear_cheque(db,ident(int(parts[2])),data)
+                elif path in ('/api/settlement-preview','/api/supplier-settlement-preview') and method=='POST':
+                    result=supplier_settlements.preview(db,data)
+                elif path=='/api/supplier-settlements' and method=='POST':
+                    result=supplier_settlements.save(db,data)
+                elif len(parts)==3 and parts[:2]==['api','supplier-settlements'] and method=='PUT':
+                    result=supplier_settlements.save(db,data,ident(int(parts[2])))
+                elif len(parts)==4 and parts[:2]==['api','supplier-settlements'] and parts[3]=='post' and method=='POST':
+                    result=supplier_settlements.approve(db,ident(int(parts[2])),data)
+                elif len(parts)==4 and parts[:2]==['api','supplier-settlements'] and parts[3]=='reverse' and method=='POST':
+                    result=supplier_settlements.reverse(db,ident(int(parts[2])),data)
+                elif path in ('/api/refund-preview','/api/supplier-refund-preview') and method=='POST':
+                    result=supplier_adjustments.refund_preview(db,data)
+                elif path=='/api/supplier-refunds' and method=='POST':
+                    result=supplier_adjustments.save_refund(db,data)
+                elif len(parts)==3 and parts[:2]==['api','supplier-refunds'] and method=='PUT':
+                    result=supplier_adjustments.save_refund(db,data,ident(int(parts[2])))
+                elif len(parts)==4 and parts[:2]==['api','supplier-refunds'] and parts[3]=='post' and method=='POST':
+                    result=supplier_adjustments.approve_refund(db,ident(int(parts[2])),data)
+                elif len(parts)==4 and parts[:2]==['api','supplier-payments'] and parts[3]=='reverse' and method=='POST':
+                    pk=ident(int(parts[2]));supplier_adjustments.reverse_payment(db,pk,data);result=supplier_payments.get_payment(db,pk)
+                elif len(parts)==4 and parts[:2]==['api','supplier-payments'] and parts[3]=='cheque-event' and method=='POST':
+                    pk=ident(int(parts[2]));supplier_adjustments.cheque_event(db,pk,data);result=supplier_payments.get_payment(db,pk)
                 elif path=='/api/supplier-returns' and method=='POST':
                     if 'id' in data: raise ValueError('استخدم تعديل مستند المرتجع المحفوظ')
                     result=payables.save_return(db,data)

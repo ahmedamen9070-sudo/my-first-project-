@@ -276,18 +276,21 @@ def funding_balances(db, as_of=None):
 
 def _preview(db, value):
     supplier_id, payment_date, amount = value['supplier_id'], value['payment_date'], value['amount_cents']
-    historical = payables.open_invoices(db, supplier_id, payment_date)
-    # Include every approved document, including future-dated payments. A new
-    # backdated payment must not reserve the same invoice balance a second time.
-    present = {row.get('invoice_id', row.get('id')): row for row in payables.open_invoices(db, supplier_id, '9999-12-31')}
+    import supplier_settlements
+    # Capacity must remain valid at every future accounting boundary. An
+    # intermediate payment followed by its later reversal still used capacity
+    # during that interval; checking only the start and final balance misses it.
+    dates = supplier_settlements.capacity_dates(db, payment_date)
+    snapshots = [(day, payables.open_invoices(db, supplier_id, day), payables.supplier_balances(db, supplier_id, day)) for day in dates]
+    historical = next(rows for day, rows, _ in snapshots if day == payment_date)
+    balances = next(balance for day, _, balance in snapshots if day == payment_date)
+    by_date = [{row.get('invoice_id', row.get('id')): row for row in rows} for _, rows, _ in snapshots]
     eligible = {}
     for row in historical:
         invoice_id = row.get('invoice_id', row.get('id'))
-        available = min(row['outstanding_cents'], present.get(invoice_id, {}).get('outstanding_cents', 0))
+        available = min(snapshot.get(invoice_id, {}).get('outstanding_cents', 0) for snapshot in by_date)
         eligible[invoice_id] = {**row, 'invoice_id': invoice_id, 'outstanding_cents': available}
-    balances = payables.supplier_balances(db, supplier_id, payment_date)
-    current_balances = payables.supplier_balances(db, supplier_id, '9999-12-31')
-    net = min(balances['net_payable_cents'], current_balances['net_payable_cents'])
+    net = min(balance['net_payable_cents'] for _, _, balance in snapshots)
     ceiling = max(net, 0)
     allocations = []
     if value['allocation_mode'] == 'manual':
@@ -473,6 +476,12 @@ def clear_cheque(db, payment_id, data):
     if row['method'] != 'cheque' or row['status'] != 'posted':
         raise ValueError('التحصيل متاح للشيك المعتمد فقط')
     clearance_date = _date(data.get('clearance_date'), 'تاريخ تحصيل الشيك')
+    if payables._has_table(db, 'supplier_cheque_events'):
+        import supplier_adjustments
+        supplier_adjustments.assert_cheque_can_clear(db, payment_id, clearance_date)
+        events = supplier_adjustments.cheque_events(db, payment_id, '9999-12-31')
+        if events and (type(data.get('event_revision')) is not int or data['event_revision'] != len(events)):
+            raise accounting.ConflictError('حالة الشيك تغيرت؛ أعد فتح المستند قبل إثبات الصرف')
     reference = _text(data, 'reference', 200, True)
     bank = _funding(db, data.get('bank_account_id'), 'bank_transfer')
     if bank['id'] != row['funding_account_id']:
@@ -523,6 +532,9 @@ def get_payment(db, payment_id):
     result.pop('request_fingerprint', None)
     result.pop('cheque_bank_key', None)
     result.pop('cheque_number_key', None)
+    if payables._has_table(db, 'supplier_payment_reversals'):
+        import supplier_adjustments
+        result = supplier_adjustments.payment_overlay(db, result, '9999-12-31')
     return result
 
 

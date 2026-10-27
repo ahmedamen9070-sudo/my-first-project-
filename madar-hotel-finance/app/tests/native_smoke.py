@@ -48,7 +48,15 @@ def create(*a,**kw):
             w.run_js('page("dashboard")')
             time.sleep(.3)
             ImageGrab.grab().save(str(Path(__file__).with_name('desktop-test.png')))
-            w.run_js('document.querySelector("#print-document").innerHTML="<h1>A&amp;M native print test</h1><p>Saved document printing</p>"; window.print()')
+            w.run_js('SupplierSettlement.reconciliation()')
+            for _ in range(100):
+                if evaluate('Boolean(document.querySelector("#supplier-settlement-window[open] .ss-result"))'):break
+                time.sleep(.1)
+            else:raise AssertionError('Native supplier reconciliation did not load')
+            result['reconciliation']=evaluate('document.querySelector("#ss-title").innerText')
+            assert 'مطابقة' in result['reconciliation']
+            ImageGrab.grab().save(str(Path(__file__).with_name('settlement-native.png')))
+            w.run_js('document.querySelector("[data-ss-action=print-reconciliation]").click()')
             for _ in range(100):
                 if output.exists() and output.stat().st_size>100:break
                 time.sleep(.1)
