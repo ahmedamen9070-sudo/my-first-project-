@@ -12,6 +12,8 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 import accounting
+import taxation
+import accounting_periods
 
 MAX_CENTS = 10**13
 CATEGORIES = ('أغذية', 'مشروبات', 'مجمدات', 'منظفات', 'مستلزمات فندقية', 'خدمات', 'أخرى')
@@ -209,6 +211,7 @@ def create_journal(db, source_type, source_id, entry_date, lines):
         if old['request_fingerprint'] != fingerprint or not old['sealed']:
             raise accounting.ConflictError('مصدر القيد مرحل بالفعل ببيانات مختلفة')
         return old['id']
+    accounting_periods.assert_open(db,entry_date)
     code = _code(db, 'journal', 'JE')
     journal_id = db.execute('INSERT INTO journal_entries(code,source_type,source_id,entry_date,created_at,request_fingerprint) VALUES(?,?,?,?,?,?)',
                             (code, source_type, source_id, entry_date, _now(), fingerprint)).lastrowid
@@ -353,7 +356,7 @@ def enrich_invoice(db, row):
         line['returnable_quantity'] = _quantity_text(Decimal(line['quantity']) - returned_qty)
         line['returned_cents'] = returned_cents
         result['lines'].append(line)
-    return result
+    return taxation.enrich_invoice(db,result)
 
 
 def _invoice_detail(db, invoice_id):
@@ -369,8 +372,8 @@ def post_invoice(db, invoice_id, data):
         return _invoice_detail(db, invoice_id)
     assert_invoice_editable(db, invoice_id)
     _revision(data, invoice)
-    if invoice['tax_cents'] or invoice['tax_basis']:
-        raise ValueError('يلزم ضبط المعالجة الضريبية قبل ترحيل فاتورة بضريبة')
+    accounting_periods.assert_open(db,invoice['business_date'])
+    taxation.validate_invoice_for_posting(db,invoice_id)
     due = set_invoice_terms(db, invoice_id, data)
     if due is None:
         raise ValueError('حدد تاريخ الاستحقاق قبل اعتماد الفاتورة')
@@ -397,10 +400,9 @@ def post_invoice(db, invoice_id, data):
         last = _last_purchase(db, product['id'], before=invoice)
         previous = last['price_cents'] if last else None
         snapshots.append((line['id'], invoice_id, product['id'], account['id'], invoice['department_id'], previous))
-        if line['total_cents']:
-            journal_lines.append({'account_id': account['id'], 'debit_cents': line['total_cents'], 'supplier_id': invoice['supplier_id'], 'department_id': invoice['department_id'], 'source_line_id': line['id']})
-    if sum(line['total_cents'] for line in lines) != amount or invoice['subtotal_cents'] != amount:
-        raise ValueError('إجمالي الفاتورة لا يساوي إجمالي البنود')
+        journal_lines.extend(taxation.invoice_line_debits(db,invoice_id,line['id'],account['id'],invoice['supplier_id'],invoice['department_id']))
+    if sum(line['total_cents'] for line in lines) != invoice['subtotal_cents'] or invoice['subtotal_cents'] + invoice['tax_cents'] != amount:
+        raise ValueError('إجمالي الفاتورة لا يساوي صافي البنود والضريبة')
     journal_lines.append({'account_id': payable['id'], 'credit_cents': amount, 'supplier_id': invoice['supplier_id'], 'department_id': invoice['department_id']})
     journal_id = create_journal(db, 'supplier_invoice', invoice_id, invoice['business_date'], journal_lines)
     # Revision changes before insertion because the posting snapshot locks this row.
@@ -445,12 +447,15 @@ def _return_payload(db, data, old=None):
         remaining_qty = Decimal(original['quantity']) - returned_qty
         if qty > remaining_qty:
             raise ValueError('كمية المرتجع تتجاوز الكمية المتاحة من الفاتورة')
-        # Round cumulative quantities, rather than repeatedly rounding each
-        # fraction up. Six half-unit returns must equal the original three units.
-        cumulative = int(((returned_qty + qty) * original['price_cents']).quantize(Decimal('1'), rounding=ROUND_HALF_UP))
-        total = original['total_cents'] - returned_cents if qty == remaining_qty else cumulative - returned_cents
-        if total < 0 or total + returned_cents > original['total_cents']:
-            raise ValueError('قيمة المرتجع تتجاوز قيمة البند الأصلي')
+        tax_amounts=taxation.return_line_amounts(db,line_id,qty)
+        if tax_amounts is not None:
+            total=tax_amounts['gross_cents']
+        else:
+            # Cumulative quantity rounding prevents repeated fractional cents.
+            cumulative = int(((returned_qty + qty) * original['price_cents']).quantize(Decimal('1'), rounding=ROUND_HALF_UP))
+            total = original['total_cents'] - returned_cents if qty == remaining_qty else cumulative - returned_cents
+            if total < 0 or total + returned_cents > original['total_cents']:
+                raise ValueError('قيمة المرتجع تتجاوز قيمة البند الأصلي')
         lines.append((line_id, _quantity_text(qty), total))
     total = sum(line[2] for line in lines)
     _money(total)
@@ -465,6 +470,7 @@ def save_return(db, data):
         if old['status'] != 'draft':
             raise ValueError('المرتجع المعتمد أو الملغى لا يعدل')
         _revision(data, old)
+        accounting_periods.assert_open(db,old['business_date'])
         if data.get('action') == 'cancel':
             db.execute("UPDATE supplier_returns SET status='cancelled',revision=revision+1,updated_at=? WHERE id=?", (_now(), return_id))
             _audit(db, 'supplier_return', return_id, 'cancel_draft', {})
@@ -476,6 +482,7 @@ def save_return(db, data):
             if existing:
                 return return_detail(db, existing['id'])
     _, values, lines = _return_payload(db, data, old)
+    accounting_periods.assert_open(db,values[2])
     if old:
         db.execute('UPDATE supplier_returns SET invoice_id=?,supplier_id=?,business_date=?,reference=?,notes=?,total_cents=?,revision=revision+1,updated_at=? WHERE id=?', (*values, _now(), return_id))
         db.execute('DELETE FROM supplier_return_lines WHERE return_id=?', (return_id,))
@@ -483,6 +490,7 @@ def save_return(db, data):
         code = _code(db, 'supplier_return', 'SRT')
         return_id = db.execute("INSERT INTO supplier_returns(code,request_key,invoice_id,supplier_id,business_date,reference,notes,total_cents,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,'draft',?,?)", (code, key, *values, _now(), _now())).lastrowid
     db.executemany('INSERT INTO supplier_return_lines(return_id,invoice_line_id,quantity,total_cents) VALUES(?,?,?,?)', [(return_id, *line) for line in lines])
+    taxation.save_return_tax(db,return_id)
     _audit(db, 'supplier_return', return_id, 'update_draft' if old else 'create_draft', {'total_cents': values[-1]})
     return return_detail(db, return_id)
 
@@ -494,9 +502,14 @@ def approve_return(db, return_id, data):
     if old['status'] != 'draft':
         raise ValueError('المرتجع الملغى لا يعتمد')
     _revision(data, old)
+    accounting_periods.assert_open(db,old['business_date'])
     payload = dict(old)
     payload['lines'] = [dict(row) for row in db.execute('SELECT invoice_line_id,quantity FROM supplier_return_lines WHERE return_id=? ORDER BY id', (return_id,))]
     invoice, values, lines = _return_payload(db, payload, old)
+    # Rebuild the draft tax split against quantities actually approved by now.
+    for line_id,quantity,cents in lines:
+        db.execute('UPDATE supplier_return_lines SET total_cents=? WHERE return_id=? AND invoice_line_id=?',(cents,return_id,line_id))
+    taxation.save_return_tax(db,return_id)
     posting = db.execute('SELECT * FROM invoice_postings WHERE invoice_id=?', (invoice['id'],)).fetchone()
     payable = _posting_account(db, posting['payable_account_id'])
     journal_lines = [{'account_id': payable['id'], 'debit_cents': values[-1], 'supplier_id': old['supplier_id'], 'department_id': invoice['department_id']}] if values[-1] else []
@@ -504,8 +517,7 @@ def approve_return(db, return_id, data):
         snapshot = db.execute('SELECT * FROM invoice_posting_lines WHERE invoice_line_id=?', (line_id,)).fetchone()
         if snapshot is None:
             raise ValueError('الربط المحاسبي لبند الفاتورة غير موجود')
-        if cents:
-            journal_lines.append({'account_id': snapshot['expense_account_id'], 'credit_cents': cents, 'supplier_id': old['supplier_id'], 'department_id': snapshot['department_id'], 'source_line_id': line_id})
+        journal_lines.extend(taxation.return_line_credits(db,return_id,line_id,snapshot['expense_account_id'],old['supplier_id'],snapshot['department_id']))
     journal_id = create_journal(db, 'supplier_return', return_id, old['business_date'], journal_lines) if values[-1] else None
     # Recalculate draft rounding against the actual approved returns, not other drafts.
     for line_id, quantity, cents in lines:
@@ -527,7 +539,7 @@ def return_detail(db, return_id):
     supplier = _require(db, 'suppliers', result['supplier_id'])
     result.update(invoice_code=invoice['code'], supplier_name=supplier['name'], supplier_code=supplier['code'])
     result['lines'] = [dict(row) for row in db.execute('''SELECT rl.*,il.product_id,il.name,il.unit,il.price_cents FROM supplier_return_lines rl JOIN invoice_lines il ON il.id=rl.invoice_line_id WHERE rl.return_id=? ORDER BY rl.id''', (return_id,))]
-    return result
+    return taxation.enrich_return(db,result)
 
 
 def list_returns(db, supplier_id=None):

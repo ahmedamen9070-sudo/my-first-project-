@@ -13,6 +13,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 
 import accounting
+import accounting_periods
 import payables
 
 
@@ -374,6 +375,7 @@ def save_payment(db, data):
         if old['request_fingerprint'] != digest:
             raise accounting.ConflictError('مفتاح الطلب مستخدم لسداد مختلف؛ أعد فتح السداد المحفوظ')
         return get_payment(db, old['id'])
+    accounting_periods.assert_open(db, value['payment_date'])
     _preview(db, value)
     bank, number = _cheque_unique(db, value)
     stamp = _now()
@@ -400,10 +402,12 @@ def update_payment(db, payment_id, data):
     if old['status'] != 'draft':
         raise ValueError('السداد المعتمد أو الملغى لا يعدل')
     if data.get('action') == 'cancel':
+        accounting_periods.assert_open(db, old['payment_date'])
         db.execute("UPDATE supplier_payments SET status='cancelled',revision=revision+1,updated_at=? WHERE id=?", (_now(), payment_id))
         _audit(db, payment_id, 'cancel_draft', {})
         return get_payment(db, payment_id)
     value = _payload(db, data)
+    accounting_periods.assert_document_dates(db, value['payment_date'], old['payment_date'])
     _preview(db, value)
     bank, number = _cheque_unique(db, value, payment_id)
     db.execute('''UPDATE supplier_payments SET supplier_id=?,payment_date=?,amount_cents=?,method=?,details=?,funding_account_id=?,
@@ -428,6 +432,7 @@ def approve_payment(db, payment_id, data):
     accounting._revision(data, row)
     if row['status'] != 'draft':
         raise ValueError('السداد الملغى لا يعتمد')
+    accounting_periods.assert_open(db, row['payment_date'])
     saved = _saved_payload(row)
     if accounting.get_settings(db)['base_currency'] != 'EGP':
         raise ValueError('راجع العملة الأساسية؛ سند السداد محفوظ بالجنيه المصري')
@@ -491,6 +496,7 @@ def clear_cheque(db, payment_id, data):
             raise accounting.ConflictError('الشيك محصل بالفعل ببيانات أخرى')
         return get_payment(db, payment_id)
     accounting._revision(data, row)
+    accounting_periods.assert_open(db, clearance_date)
     if clearance_date < max(row['payment_date'], json.loads(row['details'])['cheque_date']):
         raise ValueError('تحصيل الشيك لا يسبق تاريخ إصداره أو سنده')
     # Debit the actual liability credited on issue, even if mappings later change.

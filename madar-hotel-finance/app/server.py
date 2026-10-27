@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """A&M Accounting Hotel for Audit &Control development application: single operator, isolated draft purchasing workflow."""
 import argparse, json, os, sqlite3, secrets, mimetypes, shutil, tempfile
-import accounting, payables, supplier_payments, supplier_settlements, supplier_adjustments
+import accounting, payables, supplier_payments, supplier_settlements, supplier_adjustments, taxation, accounting_periods
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -42,6 +42,8 @@ def init():
         supplier_payments.initialize(db)
         supplier_settlements.initialize(db)
         supplier_adjustments.initialize(db)
+        taxation.initialize(db)
+        accounting_periods.initialize(db)
 
 def now(): return datetime.now(timezone.utc).isoformat(timespec='seconds')
 def code(db,kind,prefix):
@@ -79,7 +81,6 @@ def require(db,table,pk):
 
 def invoice_payload(db,data):
     if data.get('kind','expense') not in ('expense','service'): raise ValueError('نوع العملية غير صحيح')
-    if decimal(data.get('tax_rate','0'),'100')!=0: raise ValueError('الضرائب لم تضبط بعد؛ احفظ الفاتورة دون ضريبة مؤقتًا')
     supplier=require(db,'suppliers',data.get('supplier_id'))
     dep=require(db,'departments',data.get('department_id'))
     ref=txt(data,'reference',100,True)
@@ -87,6 +88,7 @@ def invoice_payload(db,data):
     try: parsed=date.fromisoformat(ds)
     except ValueError: raise ValueError('تاريخ التشغيل غير صحيح')
     if parsed.isoformat()!=ds: raise ValueError('صيغة التاريخ غير صحيحة')
+    accounting_periods.assert_open(db,ds)
     tax=decimal(data.get('tax_rate','0'),'100')
     if tax!=tax.quantize(Decimal('.01')): raise ValueError('نسبة الضريبة بمنزلتين كحد أقصى')
     rows=data.get('lines')
@@ -106,7 +108,9 @@ def invoice_payload(db,data):
     sub=sum(l[-1] for l in lines)
     if sub>10**13: raise ValueError('إجمالي الفاتورة يتجاوز النطاق المسموح')
     tax_cents=int((Decimal(sub)*tax/100).quantize(Decimal('1'),rounding=ROUND_HALF_UP))
-    return (supplier['id'],ref,ds,dep['id'],txt(data,'notes',2000),sub,int(tax*100),tax_cents,sub+tax_cents),lines
+    values=(supplier['id'],ref,ds,dep['id'],txt(data,'notes',2000),sub,int(tax*100),tax_cents,sub+tax_cents)
+    values,plan=taxation.prepare_invoice(db,data,values,lines)
+    return values,lines,plan
 
 def invoice(db,pk):
     r=db.execute('''SELECT i.*,s.name supplier_name,s.code supplier_code,d.name department_name,d.cost_code FROM invoices i JOIN suppliers s ON s.id=i.supplier_id JOIN departments d ON d.id=i.department_id WHERE i.id=?''',(pk,)).fetchone()
@@ -125,9 +129,17 @@ def invoice_retry(db,pk,data):
     if parsed.isoformat()!=business_date: raise ValueError('صيغة التاريخ غير صحيحة')
     tax=decimal(data.get('tax_rate','0'),'100')
     if tax!=tax.quantize(Decimal('.01')): raise ValueError('نسبة الضريبة بمنزلتين كحد أقصى')
+    incoming_code=data.get('tax_code_id')
+    if incoming_code is not None: ident(incoming_code)
+    if incoming_code!=old.get('tax_code_id'):
+        raise accounting.ConflictError('مفتاح الحفظ مستخدم لمعالجة ضريبية أخرى')
+    if incoming_code is None and tax:
+        raise ValueError('اختر كود ضريبة مضبوطًا؛ النسب اليدوية غير متاحة')
+    if incoming_code is not None and tax not in (0,Decimal(old['tax_basis'])/100):
+        raise accounting.ConflictError('نسبة ضريبة إعادة الطلب تختلف عن النسخة المحفوظة')
     rows=data.get('lines')
     if not isinstance(rows,list) or not 1<=len(rows)<=100: raise ValueError('أضف من صنف إلى ١٠٠ صنف')
-    normalized=[];seen=set();subtotal=0
+    normalized=[];seen=set();subtotal=0;tax_cents=0
     for line in rows:
         if not isinstance(line,dict): raise ValueError('بند غير صحيح')
         product_id=ident(line.get('product_id'))
@@ -136,10 +148,11 @@ def invoice_retry(db,pk,data):
         quantity=decimal(line.get('quantity'),'1000000')
         if quantity<=0 or quantity!=quantity.quantize(Decimal('.001')): raise ValueError('الكمية موجبة وبحد أقصى ٣ منازل عشرية')
         price=cents(line.get('price'))
-        subtotal+=int((quantity*price).quantize(Decimal('1'),rounding=ROUND_HALF_UP))
+        net=int((quantity*price).quantize(Decimal('1'),rounding=ROUND_HALF_UP));subtotal+=net
+        tax_cents+=int((Decimal(net)*old['tax_basis']/10000).quantize(Decimal('1'),rounding=ROUND_HALF_UP)) if incoming_code else 0
         normalized.append((product_id,quantity,price))
     if subtotal>10**13: raise ValueError('إجمالي الفاتورة يتجاوز النطاق المسموح')
-    tax_cents=int((Decimal(subtotal)*tax/100).quantize(Decimal('1'),rounding=ROUND_HALF_UP))
+    tax_basis=old['tax_basis'] if incoming_code else 0
     # The original save already derived an omitted due date from supplier terms.
     # Preserve that snapshot when terms are edited before a network retry.
     due=data.get('due_date',old['due_date'])
@@ -149,7 +162,7 @@ def invoice_retry(db,pk,data):
         try: parsed_due=date.fromisoformat(due)
         except ValueError: raise ValueError('تاريخ الاستحقاق غير صحيح')
         if parsed_due.isoformat()!=due: raise ValueError('صيغة تاريخ الاستحقاق غير صحيحة')
-    headers=(supplier_id,reference,business_date,department_id,txt(data,'notes',2000),subtotal,int(tax*100),tax_cents,subtotal+tax_cents,kind,due)
+    headers=(supplier_id,reference,business_date,department_id,txt(data,'notes',2000),subtotal,tax_basis,tax_cents,subtotal+tax_cents,kind,due)
     saved=tuple(old[key] for key in ('supplier_id','reference','business_date','department_id','notes','subtotal_cents','tax_basis','tax_cents','total_cents','kind','due_date'))
     old_lines=sorted((line['product_id'],Decimal(line['quantity']),line['price_cents']) for line in old['lines'])
     if headers!=saved or sorted(normalized)!=old_lines:
@@ -200,10 +213,17 @@ class Handler(BaseHTTPRequestHandler):
             if path.startswith('/api/'):
                 with connect() as db:
                     if path=='/api/accounting':return self.send(200,accounting.snapshot(db))
+                    if path=='/api/tax-config':return self.send(200,taxation.snapshot(db))
+                    if path=='/api/tax-report':
+                        end=args.get('to_date',args.get('as_of',[None]))[0]
+                        start=args.get('from_date',[end[:4]+'-01-01' if end else None])[0]
+                        return self.send(200,taxation.report(db,start,end))
+                    if path=='/api/accounting-periods':return self.send(200,accounting_periods.snapshot(db,int(args['year'][0]) if args.get('year') else None))
+                    if path=='/api/period-preview':return self.send(200,accounting_periods.preview(db,args.get('month',[''])[0]))
                     if path=='/api/accounts-export':return self.send(200,accounting.export_csv(db).encode('utf-8'),'text/csv; charset=utf-8','AM-chart-of-accounts.csv')
                     if path=='/api/bootstrap':
                         settings=accounting.get_settings(db)
-                        masters=payables.master_data(db)
+                        masters=payables.master_data(db);tax_config=taxation.snapshot(db);masters.update(tax_codes=tax_config['codes'],tax_settings=tax_config['settings'])
                         return self.send(200,{**masters,'csrf':TOKEN,'departments':[dict(r) for r in db.execute('SELECT * FROM departments ORDER BY id')],'suppliers':[payables.enrich_supplier(db,dict(r)) for r in db.execute('SELECT * FROM suppliers ORDER BY id DESC')],'products':[payables.enrich_product(db,dict(r)) for r in db.execute('SELECT * FROM products ORDER BY id DESC')],'payment_methods':supplier_payments.payment_methods(),'mode':'development','currency':settings['base_currency'],'currency_configured':bool(settings['base_currency']),'accounting_settings':settings})
                     if path=='/api/dashboard':
                         r=dict(db.execute("SELECT COUNT(*) count,COALESCE(SUM(total_cents),0) total_cents FROM invoices i WHERE status='draft' AND NOT EXISTS(SELECT 1 FROM invoice_postings p WHERE p.invoice_id=i.id)").fetchone())
@@ -273,7 +293,17 @@ class Handler(BaseHTTPRequestHandler):
             path=urlparse(self.path).path;parts=path.strip('/').split('/')
             with connect() as db:
                 db.execute('BEGIN IMMEDIATE')
-                if path=='/api/accounts' and method=='POST':
+                if path=='/api/tax-settings' and method=='PUT':
+                    result=taxation.update_settings(db,data)
+                elif path=='/api/tax-codes' and method=='POST':
+                    result=taxation.create_code(db,data)
+                elif len(parts)==3 and parts[:2]==['api','tax-codes'] and method=='PUT':
+                    result=taxation.update_code(db,ident(int(parts[2])),data)
+                elif path=='/api/tax-preview' and method=='POST':
+                    result=taxation.preview(db,data)
+                elif len(parts)==4 and parts[:2]==['api','accounting-periods'] and parts[3] in ('close','reopen') and method=='POST':
+                    result=(accounting_periods.close if parts[3]=='close' else accounting_periods.reopen)(db,parts[2],data)
+                elif path=='/api/accounts' and method=='POST':
                     result=accounting.create_account(db,data)
                 elif path.startswith('/api/accounts/') and method=='PUT':
                     result=accounting.update_account(db,int(path.rsplit('/',1)[1]),data)
@@ -308,21 +338,22 @@ class Handler(BaseHTTPRequestHandler):
                     key=txt(data,'request_key',100,True)
                     old=db.execute('SELECT id FROM invoices WHERE request_key=?',(key,)).fetchone()
                     if old: return self.send(200,invoice_retry(db,old['id'],data))
-                    values,lines=invoice_payload(db,data);stamp=now();c=code(db,'invoice','PIN')
+                    values,lines,tax_plan=invoice_payload(db,data);stamp=now();c=code(db,'invoice','PIN')
                     cur=db.execute("INSERT INTO invoices(code,request_key,supplier_id,reference,business_date,department_id,notes,subtotal_cents,tax_basis,tax_cents,total_cents,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,'draft',?,?)",(c,key,*values,stamp,stamp));pk=cur.lastrowid
-                    db.executemany('INSERT INTO invoice_lines(invoice_id,product_id,name,unit,quantity,price_cents,total_cents) VALUES(?,?,?,?,?,?,?)',[(pk,*l) for l in lines]);db.execute('UPDATE invoices SET kind=? WHERE id=?',(data.get('kind','expense'),pk));payables.set_invoice_terms(db,pk,data);audit(db,'invoice',pk,'create_draft',{'code':c,'total_cents':values[-1]});result=invoice(db,pk)
+                    db.executemany('INSERT INTO invoice_lines(invoice_id,product_id,name,unit,quantity,price_cents,total_cents) VALUES(?,?,?,?,?,?,?)',[(pk,*l) for l in lines]);db.execute('UPDATE invoices SET kind=? WHERE id=?',(data.get('kind','expense'),pk));taxation.save_invoice_tax(db,pk,tax_plan);payables.set_invoice_terms(db,pk,data);audit(db,'invoice',pk,'create_draft',{'code':c,'total_cents':values[-1]});result=invoice(db,pk)
                 elif len(parts)==4 and parts[:2]==['api','invoices'] and parts[3]=='post' and method=='POST':
                     result=payables.post_invoice(db,ident(int(parts[2])),data)
                 elif len(parts)==3 and parts[:2]==['api','invoices'] and method=='PUT':
                     pk=ident(int(parts[2]));old=invoice(db,pk)
                     if old['status']!='draft': raise ValueError('الفاتورة المعتمدة أو الملغاة لا تعدل؛ استخدم مستند المرتجع عند الحاجة')
+                    accounting_periods.assert_open(db,old['business_date'])
                     if isinstance(data.get('revision'),bool) or not isinstance(data.get('revision'),int) or data.get('revision')!=old['revision']: raise accounting.ConflictError('الفاتورة تغيرت من نافذة أخرى. أعد فتحها قبل التعديل.')
                     if data.get('action')=='cancel':
                         db.execute("UPDATE invoices SET status='cancelled',revision=revision+1,updated_at=? WHERE id=?",(now(),pk));audit(db,'invoice',pk,'cancel_draft',{'code':old['code']})
                     else:
-                        values,lines=invoice_payload(db,data)
+                        values,lines,tax_plan=invoice_payload(db,data)
                         db.execute('UPDATE invoices SET supplier_id=?,reference=?,business_date=?,department_id=?,notes=?,subtotal_cents=?,tax_basis=?,tax_cents=?,total_cents=?,revision=revision+1,updated_at=? WHERE id=?',(*values,now(),pk))
-                        db.execute('DELETE FROM invoice_lines WHERE invoice_id=?',(pk,));db.executemany('INSERT INTO invoice_lines(invoice_id,product_id,name,unit,quantity,price_cents,total_cents) VALUES(?,?,?,?,?,?,?)',[(pk,*l) for l in lines]);db.execute('UPDATE invoices SET kind=? WHERE id=?',(data.get('kind','expense'),pk));payables.set_invoice_terms(db,pk,data);audit(db,'invoice',pk,'update_draft',{'previous_total_cents':old['total_cents'],'total_cents':values[-1]})
+                        db.execute('DELETE FROM invoice_lines WHERE invoice_id=?',(pk,));db.executemany('INSERT INTO invoice_lines(invoice_id,product_id,name,unit,quantity,price_cents,total_cents) VALUES(?,?,?,?,?,?,?)',[(pk,*l) for l in lines]);db.execute('UPDATE invoices SET kind=? WHERE id=?',(data.get('kind','expense'),pk));taxation.save_invoice_tax(db,pk,tax_plan);payables.set_invoice_terms(db,pk,data);audit(db,'invoice',pk,'update_draft',{'previous_total_cents':old['total_cents'],'total_cents':values[-1]})
                     result=invoice(db,pk)
                 elif path in ('/api/supplier-payment-preview','/api/payment-preview') and method=='POST':
                     result=supplier_payments.allocation_preview(db,data)
@@ -356,6 +387,16 @@ class Handler(BaseHTTPRequestHandler):
                     pk=ident(int(parts[2]));supplier_adjustments.reverse_payment(db,pk,data);result=supplier_payments.get_payment(db,pk)
                 elif len(parts)==4 and parts[:2]==['api','supplier-payments'] and parts[3]=='cheque-event' and method=='POST':
                     pk=ident(int(parts[2]));supplier_adjustments.cheque_event(db,pk,data);result=supplier_payments.get_payment(db,pk)
+                elif path in ('/api/supplier-return-preview','/api/return-preview') and method=='POST':
+                    payload={**data,'reference':data.get('reference') or 'معاينة مرتجع'}
+                    original,values,return_lines=payables._return_payload(db,payload)
+                    preview_lines=[]
+                    for line_id,quantity,gross in return_lines:
+                        line=dict(require(db,'invoice_lines',line_id))
+                        amounts=taxation.return_line_amounts(db,line_id,quantity)
+                        if amounts is None: amounts={'net_cents':gross,'tax_cents':0,'recoverable_cents':0,'nonrecoverable_cents':0,'gross_cents':gross}
+                        preview_lines.append({'invoice_line_id':line_id,'name':line['name'],'unit':line['unit'],'quantity':quantity,'price_cents':line['price_cents'],'total_cents':gross,**amounts})
+                    result={'invoice_id':original['id'],'business_date':values[2],'total_cents':values[-1],'gross_cents':values[-1],'net_cents':sum(x['net_cents'] for x in preview_lines),'subtotal_cents':sum(x['net_cents'] for x in preview_lines),'tax_cents':sum(x['tax_cents'] for x in preview_lines),'lines':preview_lines}
                 elif path=='/api/supplier-returns' and method=='POST':
                     if 'id' in data: raise ValueError('استخدم تعديل مستند المرتجع المحفوظ')
                     result=payables.save_return(db,data)

@@ -10,6 +10,7 @@ import json
 from decimal import Decimal, InvalidOperation
 
 import accounting
+import accounting_periods
 import payables
 
 ALL_TIME = '9999-12-31'
@@ -256,6 +257,7 @@ def save(db, data, settlement_id=None):
         if old['status'] != 'draft':
             raise ValueError('التسوية المعتمدة أو الملغاة لا تعدل')
         if data.get('action') == 'cancel':
+            accounting_periods.assert_open(db, old['business_date'])
             db.execute("UPDATE supplier_settlements SET status='cancelled',revision=revision+1,updated_at=? WHERE id=?", (payables._now(), settlement_id))
             payables._audit(db, 'supplier_settlement', settlement_id, 'cancel_draft', {})
             return detail(db, settlement_id)
@@ -268,6 +270,7 @@ def save(db, data, settlement_id=None):
             if existing['request_fingerprint'] != digest:
                 raise accounting.ConflictError('مفتاح الحفظ مستخدم لتسوية ببيانات أخرى')
             return detail(db, existing['id'])
+    accounting_periods.assert_document_dates(db, value['business_date'], old['business_date'] if old else None)
     _preview(db, value)
     stamp = payables._now()
     fields = (digest, value['supplier_id'], value['source_type'], value['source_id'], value['business_date'],
@@ -301,6 +304,7 @@ def approve(db, settlement_id, data):
     payables._revision(data, old)
     if old['status'] != 'draft':
         raise ValueError('التسوية الملغاة لا تعتمد')
+    accounting_periods.assert_open(db, old['business_date'])
     value = _stored_value(db, old)
     if sum(row['amount_cents'] for row in value['allocations']) != old['amount_cents']:
         raise ValueError('إجمالي التسوية لا يساوي توزيعها')
@@ -347,6 +351,7 @@ def reverse(db, settlement_id, data):
             raise accounting.ConflictError('التسوية معكوسة بالفعل ببيانات أخرى')
         return detail(db, settlement_id)
     payables._revision(data, old)
+    accounting_periods.assert_open(db, business_date)
     if business_date < old['business_date']:
         raise ValueError('تاريخ العكس لا يسبق تاريخ التسوية')
     _assert_reversal_dependencies_unused(db, settlement_id, business_date)

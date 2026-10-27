@@ -9,6 +9,7 @@ import hashlib
 import json
 
 import accounting
+import accounting_periods
 import payables
 
 
@@ -165,6 +166,7 @@ def save_refund(db, data, refund_id=None):
         if old['status'] != 'draft':
             raise ValueError('استرداد معتمد أو ملغى لا يعدل')
         if data.get('action') == 'cancel':
+            accounting_periods.assert_open(db, old['business_date'])
             db.execute("UPDATE supplier_refunds SET status='cancelled',revision=revision+1,updated_at=? WHERE id=?", (payables._now(), refund_id))
             payables._audit(db, 'supplier_refund', refund_id, 'cancel_draft', {})
             return get_refund(db, refund_id)
@@ -177,6 +179,7 @@ def save_refund(db, data, refund_id=None):
             if prior['request_fingerprint'] != digest:
                 raise accounting.ConflictError('مفتاح الحفظ مستخدم لاسترداد ببيانات أخرى')
             return get_refund(db, prior['id'])
+    accounting_periods.assert_document_dates(db, value['business_date'], old['business_date'] if refund_id is not None else None)
     _refund_preview(db, value)
     fields = ('supplier_id','source_type','source_id','business_date','reference','reason','notes','method','funding_account_id','details','amount_cents')
     values = [value[k] if k != 'details' else _json(value[k]) for k in fields]
@@ -197,6 +200,7 @@ def approve_refund(db, refund_id, data):
     payables._revision(data, old)
     if old['status'] != 'draft':
         raise ValueError('استرداد ملغى لا يعتمد')
+    accounting_periods.assert_open(db, old['business_date'])
     value = {**old, 'details': json.loads(old['details'])}
     if accounting.get_settings(db)['base_currency'] != 'EGP':
         raise ValueError('سند الاسترداد محفوظ بالجنيه المصري؛ راجع العملة الأساسية')
@@ -319,6 +323,7 @@ def _existing_reversal(db, payment_id, data, event_type):
 
 def _reverse(db, payment, data, event_type):
     value = _reverse_payload(payment['id'], data, event_type)
+    accounting_periods.assert_open(db, value['business_date'])
     if value['business_date'] < payment['payment_date']:
         raise ValueError('تاريخ العكس لا يسبق تاريخ السداد')
     if event_type == 'cheque_bounce' and value['business_date'] < payment['clearance_date']:
@@ -370,6 +375,7 @@ def cheque_event(db, payment_id, data):
         if old['request_fingerprint'] != _fingerprint(value):
             raise accounting.ConflictError('مفتاح الطلب مستخدم لإجراء شيك آخر')
         return _payment_detail(db, payment['id'])
+    accounting_periods.assert_open(db, value['business_date'])
     _event_revision(db, payment, data)
     state = payment_overlay(db, payment, '9999-12-31')
     allowed = {'issued': {'stop','cancel'}, 'stopped': {'resume','cancel'}, 'cleared': {'bounce'}}

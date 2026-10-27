@@ -48,6 +48,22 @@ def create(*a,**kw):
             w.run_js('page("dashboard")')
             time.sleep(.3)
             ImageGrab.grab().save(str(Path(__file__).with_name('desktop-test.png')))
+            w.run_js('FiscalSetup.periods(2026)')
+            for _ in range(100):
+                if evaluate('document.querySelectorAll("#fiscal-setup-window[open] .fiscal-period-card").length===12'):break
+                time.sleep(.1)
+            else:raise AssertionError('Native fiscal period screen did not load')
+            result['fiscal_periods']=evaluate('document.querySelectorAll(".fiscal-period-card").length')
+            ImageGrab.grab().save(str(Path(__file__).with_name('fiscal-periods-native.png')))
+            w.run_js('document.querySelector("[data-fiscal-action=close]").click()')
+            w.run_js('FiscalSetup.taxes()')
+            for _ in range(100):
+                if evaluate('Boolean(document.querySelector("#fiscal-setup-window[open] [data-fiscal-action=save-tax-settings]"))'):break
+                time.sleep(.1)
+            else:raise AssertionError('Native tax setup did not load')
+            result['tax_setup']=evaluate('document.querySelector("#fiscal-title").innerText')
+            ImageGrab.grab().save(str(Path(__file__).with_name('tax-setup-native.png')))
+            w.run_js('document.querySelector("[data-fiscal-action=close]").click()')
             w.run_js('SupplierSettlement.reconciliation()')
             for _ in range(100):
                 if evaluate('Boolean(document.querySelector("#supplier-settlement-window[open] .ss-result"))'):break
