@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """A&M Accounting Hotel for Audit &Control development application: single operator, isolated draft purchasing workflow."""
 import argparse, json, os, sqlite3, secrets, mimetypes, shutil, tempfile
-import accounting
+import accounting, payables, supplier_payments
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -38,6 +38,8 @@ def init():
         for row in [('DEP-001','المطبخ الرئيسي','CC-KIT'),('DEP-002','المطعم','CC-REST'),('DEP-003','خدمة الغرف','CC-ROOM')]:
             db.execute('INSERT OR IGNORE INTO departments(code,name,cost_code) VALUES(?,?,?)',row)
         accounting.initialize(db)
+        payables.initialize(db)
+        supplier_payments.initialize(db)
 
 def now(): return datetime.now(timezone.utc).isoformat(timespec='seconds')
 def code(db,kind,prefix):
@@ -107,8 +109,77 @@ def invoice_payload(db,data):
 def invoice(db,pk):
     r=db.execute('''SELECT i.*,s.name supplier_name,s.code supplier_code,d.name department_name,d.cost_code FROM invoices i JOIN suppliers s ON s.id=i.supplier_id JOIN departments d ON d.id=i.department_id WHERE i.id=?''',(pk,)).fetchone()
     if not r: raise ValueError('الفاتورة غير موجودة')
-    r=dict(r);r['lines']=[dict(x) for x in db.execute('SELECT product_id,name,unit,quantity,price_cents,total_cents FROM invoice_lines WHERE invoice_id=? ORDER BY id',(pk,))]
-    return r
+    return payables.enrich_invoice(db,dict(r))
+
+def invoice_retry(db,pk,data):
+    """Compare a replay without re-reading mutable product defaults or names."""
+    old=invoice(db,pk)
+    kind=data.get('kind','expense')
+    if kind not in ('expense','service'): raise ValueError('نوع العملية غير صحيح')
+    supplier_id=ident(data.get('supplier_id'));department_id=ident(data.get('department_id'))
+    reference=txt(data,'reference',100,True);business_date=txt(data,'business_date',10,True)
+    try: parsed=date.fromisoformat(business_date)
+    except ValueError: raise ValueError('تاريخ التشغيل غير صحيح')
+    if parsed.isoformat()!=business_date: raise ValueError('صيغة التاريخ غير صحيحة')
+    tax=decimal(data.get('tax_rate','0'),'100')
+    if tax!=tax.quantize(Decimal('.01')): raise ValueError('نسبة الضريبة بمنزلتين كحد أقصى')
+    rows=data.get('lines')
+    if not isinstance(rows,list) or not 1<=len(rows)<=100: raise ValueError('أضف من صنف إلى ١٠٠ صنف')
+    normalized=[];seen=set();subtotal=0
+    for line in rows:
+        if not isinstance(line,dict): raise ValueError('بند غير صحيح')
+        product_id=ident(line.get('product_id'))
+        if product_id in seen: raise ValueError('الصنف مكرر؛ عدّل كمية البند الموجود')
+        seen.add(product_id)
+        quantity=decimal(line.get('quantity'),'1000000')
+        if quantity<=0 or quantity!=quantity.quantize(Decimal('.001')): raise ValueError('الكمية موجبة وبحد أقصى ٣ منازل عشرية')
+        price=cents(line.get('price'))
+        subtotal+=int((quantity*price).quantize(Decimal('1'),rounding=ROUND_HALF_UP))
+        normalized.append((product_id,quantity,price))
+    if subtotal>10**13: raise ValueError('إجمالي الفاتورة يتجاوز النطاق المسموح')
+    tax_cents=int((Decimal(subtotal)*tax/100).quantize(Decimal('1'),rounding=ROUND_HALF_UP))
+    # The original save already derived an omitted due date from supplier terms.
+    # Preserve that snapshot when terms are edited before a network retry.
+    due=data.get('due_date',old['due_date'])
+    if due=='': due=None
+    if due is not None:
+        if not isinstance(due,str): raise ValueError('تاريخ الاستحقاق غير صحيح')
+        try: parsed_due=date.fromisoformat(due)
+        except ValueError: raise ValueError('تاريخ الاستحقاق غير صحيح')
+        if parsed_due.isoformat()!=due: raise ValueError('صيغة تاريخ الاستحقاق غير صحيحة')
+    headers=(supplier_id,reference,business_date,department_id,txt(data,'notes',2000),subtotal,int(tax*100),tax_cents,subtotal+tax_cents,kind,due)
+    saved=tuple(old[key] for key in ('supplier_id','reference','business_date','department_id','notes','subtotal_cents','tax_basis','tax_cents','total_cents','kind','due_date'))
+    old_lines=sorted((line['product_id'],Decimal(line['quantity']),line['price_cents']) for line in old['lines'])
+    if headers!=saved or sorted(normalized)!=old_lines:
+        raise accounting.ConflictError('مفتاح الحفظ مستخدم لفاتورة ببيانات أخرى؛ افتح المستند المحفوظ أو ابدأ مسودة جديدة')
+    return old
+
+def update_supplier(db,pk,data):
+    old=require(db,'suppliers',pk)
+    values={key:txt(data,key,limit,required) if key in data else old[key] for key,limit,required in [('name',150,True),('phone',40,False),('tax_number',60,False),('notes',2000,False)]}
+    if db.execute('SELECT 1 FROM suppliers WHERE name=? AND id<>?',(values['name'],pk)).fetchone(): raise ValueError('المورد مسجل بنفس الاسم')
+    db.execute('UPDATE suppliers SET name=?,phone=?,tax_number=?,notes=? WHERE id=?',(*values.values(),pk))
+    result=payables.configure_supplier(db,pk,data)
+    audit(db,'supplier',pk,'update',{'code':old['code']})
+    return result
+
+def update_product(db,pk,data):
+    old=require(db,'products',pk)
+    supplier_id=data.get('supplier_id',old['supplier_id']);require(db,'suppliers',supplier_id)
+    if supplier_id!=old['supplier_id'] and db.execute('SELECT 1 FROM invoice_lines WHERE product_id=?',(pk,)).fetchone(): raise ValueError('لا يمكن نقل بند استخدم في فاتورة إلى مورد آخر')
+    department_id=data.get('department_id',old['department_id']);require(db,'departments',department_id)
+    name=txt(data,'name',150,True) if 'name' in data else old['name']
+    unit=txt(data,'unit',30,True) if 'unit' in data else old['unit']
+    price=cents(data['price']) if 'price' in data else old['price_cents']
+    enriched=payables.enrich_product(db,dict(old))
+    last_price=enriched.get('last_purchase_price_cents')
+    if last_price is not None:
+        if 'price' in data and price!=last_price: raise ValueError('آخر سعر شراء معتمد يتغير باعتماد فاتورة جديدة فقط')
+        price=old['price_cents']
+    db.execute('UPDATE products SET supplier_id=?,name=?,unit=?,price_cents=?,department_id=? WHERE id=?',(supplier_id,name,unit,price,department_id,pk))
+    result=payables.configure_product(db,pk,data)
+    audit(db,'product',pk,'update',{'code':old['code']})
+    return result
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self,fmt,*args): pass
@@ -122,7 +193,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
         self.end_headers();self.wfile.write(raw)
     def do_GET(self):
-        path=urlparse(self.path).path
+        parsed=urlparse(self.path);path=parsed.path;args=parse_qs(parsed.query);parts=path.strip('/').split('/')
         try:
             if path.startswith('/api/'):
                 with connect() as db:
@@ -130,18 +201,38 @@ class Handler(BaseHTTPRequestHandler):
                     if path=='/api/accounts-export':return self.send(200,accounting.export_csv(db).encode('utf-8'),'text/csv; charset=utf-8','AM-chart-of-accounts.csv')
                     if path=='/api/bootstrap':
                         settings=accounting.get_settings(db)
-                        return self.send(200,{'csrf':TOKEN,'departments':[dict(r) for r in db.execute('SELECT * FROM departments ORDER BY id')],'suppliers':[dict(r) for r in db.execute('SELECT * FROM suppliers ORDER BY id DESC')],'products':[dict(r) for r in db.execute('SELECT * FROM products ORDER BY id DESC')],'mode':'development','currency':settings['base_currency'],'currency_configured':bool(settings['base_currency']),'accounting_settings':settings})
+                        masters=payables.master_data(db)
+                        return self.send(200,{**masters,'csrf':TOKEN,'departments':[dict(r) for r in db.execute('SELECT * FROM departments ORDER BY id')],'suppliers':[payables.enrich_supplier(db,dict(r)) for r in db.execute('SELECT * FROM suppliers ORDER BY id DESC')],'products':[payables.enrich_product(db,dict(r)) for r in db.execute('SELECT * FROM products ORDER BY id DESC')],'payment_methods':supplier_payments.payment_methods(),'mode':'development','currency':settings['base_currency'],'currency_configured':bool(settings['base_currency']),'accounting_settings':settings})
                     if path=='/api/dashboard':
-                        r=dict(db.execute("SELECT COUNT(*) count,COALESCE(SUM(total_cents),0) total_cents FROM invoices WHERE status='draft'").fetchone())
+                        r=dict(db.execute("SELECT COUNT(*) count,COALESCE(SUM(total_cents),0) total_cents FROM invoices i WHERE status='draft' AND NOT EXISTS(SELECT 1 FROM invoice_postings p WHERE p.invoice_id=i.id)").fetchone())
                         r['suppliers']=db.execute('SELECT COUNT(*) FROM suppliers').fetchone()[0];r['products']=db.execute('SELECT COUNT(*) FROM products').fetchone()[0]
-                        r['recent']=[dict(x) for x in db.execute('SELECT i.id,i.code,i.reference,i.total_cents,i.status,s.name supplier_name FROM invoices i JOIN suppliers s ON s.id=i.supplier_id ORDER BY i.updated_at DESC,i.id DESC LIMIT 8')]
+                        r['recent']=[payables.enrich_invoice(db,dict(x)) for x in db.execute('SELECT i.*,s.name supplier_name FROM invoices i JOIN suppliers s ON s.id=i.supplier_id ORDER BY i.updated_at DESC,i.id DESC LIMIT 8')]
+                        r['ledger_summary']=payables.ledger_summary(db);r.update(r['ledger_summary'])
                         return self.send(200,r)
                     if path=='/api/invoices':
-                        args=parse_qs(urlparse(self.path).query);q=args.get('q',[''])[0][:100];supplier=args.get('supplier_id',[''])[0]
+                        q=args.get('q',[''])[0][:100];supplier=args.get('supplier_id',[''])[0]
                         rows=db.execute('''SELECT i.*,s.name supplier_name,d.name department_name,d.cost_code FROM invoices i JOIN suppliers s ON s.id=i.supplier_id JOIN departments d ON d.id=i.department_id WHERE (i.code LIKE ? OR i.reference LIKE ? OR s.name LIKE ?) AND (?='' OR i.supplier_id=?) ORDER BY i.id DESC LIMIT 500''',('%'+q+'%',)*3+(supplier,supplier))
-                        return self.send(200,[dict(r) for r in rows])
-                    if path.startswith('/api/invoices/'):
-                        return self.send(200,invoice(db,int(path.rsplit('/',1)[1])))
+                        return self.send(200,[payables.enrich_invoice(db,dict(r)) for r in rows])
+                    if len(parts)==3 and parts[:2]==['api','invoices']:
+                        return self.send(200,invoice(db,int(parts[2])))
+                    if path=='/api/supplier-payments':
+                        supplier=args.get('supplier_id',[''])[0]
+                        return self.send(200,supplier_payments.list_payments(db,ident(int(supplier)) if supplier else None))
+                    if len(parts)==3 and parts[:2]==['api','supplier-payments']:
+                        return self.send(200,supplier_payments.get_payment(db,ident(int(parts[2]))))
+                    if path=='/api/supplier-returns':
+                        supplier=args.get('supplier_id',[''])[0]
+                        return self.send(200,payables.list_returns(db,ident(int(supplier)) if supplier else None))
+                    if len(parts)==3 and parts[:2]==['api','supplier-returns']:
+                        return self.send(200,payables.return_detail(db,ident(int(parts[2]))))
+                    if path=='/api/supplier-aging':
+                        return self.send(200,payables.aging(db,args.get('as_of',[None])[0]))
+                    if len(parts)==4 and parts[:2]==['api','suppliers'] and parts[3]=='statement':
+                        return self.send(200,payables.statement(db,ident(int(parts[2])),args.get('as_of',[None])[0]))
+                    if len(parts)==4 and parts[:2]==['api','suppliers'] and parts[3]=='open-invoices':
+                        return self.send(200,payables.open_invoices(db,ident(int(parts[2])),args.get('as_of',[None])[0]))
+                    if len(parts)==3 and parts[:2]==['api','journals']:
+                        return self.send(200,payables.journal_detail(db,ident(int(parts[2]))))
                     if path=='/api/audit':
                         return self.send(200,[dict(r) for r in db.execute('SELECT * FROM audit ORDER BY id DESC LIMIT 100')])
                 return self.send(404,{'error':'المسار غير موجود'})
@@ -160,7 +251,7 @@ class Handler(BaseHTTPRequestHandler):
             if not 0<size<=250000: raise ValueError('حجم الطلب غير صالح')
             data=json.loads(self.rfile.read(size))
             if not isinstance(data,dict): raise ValueError('صيغة الطلب غير صالحة')
-            path=urlparse(self.path).path
+            path=urlparse(self.path).path;parts=path.strip('/').split('/')
             with connect() as db:
                 db.execute('BEGIN IMMEDIATE')
                 if path=='/api/accounts' and method=='POST':
@@ -182,32 +273,55 @@ class Handler(BaseHTTPRequestHandler):
                     name=txt(data,'name',150,True)
                     if db.execute('SELECT 1 FROM suppliers WHERE name=?',(name,)).fetchone(): raise ValueError('المورد مسجل بنفس الاسم')
                     c=code(db,'supplier','SUP');cur=db.execute('INSERT INTO suppliers(code,name,phone,tax_number,notes,created_at) VALUES(?,?,?,?,?,?)',(c,name,txt(data,'phone',40),txt(data,'tax_number',60),txt(data,'notes',2000),now()));pk=cur.lastrowid
-                    audit(db,'supplier',pk,'create',{'code':c});result=dict(require(db,'suppliers',pk))
+                    audit(db,'supplier',pk,'create',{'code':c});result=payables.configure_supplier(db,pk,data)
+                elif len(parts)==3 and parts[:2]==['api','suppliers'] and method=='PUT':
+                    result=update_supplier(db,ident(int(parts[2])),data)
                 elif path=='/api/products' and method=='POST':
                     sup=require(db,'suppliers',data.get('supplier_id'));dep=require(db,'departments',data.get('department_id'))
                     c=code(db,'product','ITM');cur=db.execute('INSERT INTO products(code,supplier_id,name,unit,price_cents,department_id) VALUES(?,?,?,?,?,?)',(c,sup['id'],txt(data,'name',150,True),txt(data,'unit',30,True),cents(data.get('price')),dep['id']));pk=cur.lastrowid
-                    audit(db,'product',pk,'create',{'code':c});result=dict(require(db,'products',pk))
+                    audit(db,'product',pk,'create',{'code':c});result=payables.configure_product(db,pk,data)
+                elif len(parts)==3 and parts[:2]==['api','products'] and method=='PUT':
+                    result=update_product(db,ident(int(parts[2])),data)
                 elif path=='/api/departments' and method=='POST':
                     c=code(db,'department','DEP-N');cost=code(db,'cost','CC-N');cur=db.execute('INSERT INTO departments(code,name,cost_code) VALUES(?,?,?)',(c,txt(data,'name',100,True),cost));pk=cur.lastrowid
                     audit(db,'department',pk,'create',{'code':c,'cost_code':cost});result=dict(require(db,'departments',pk))
                 elif path=='/api/invoices' and method=='POST':
                     key=txt(data,'request_key',100,True)
                     old=db.execute('SELECT id FROM invoices WHERE request_key=?',(key,)).fetchone()
-                    if old: return self.send(200,invoice(db,old['id']))
+                    if old: return self.send(200,invoice_retry(db,old['id'],data))
                     values,lines=invoice_payload(db,data);stamp=now();c=code(db,'invoice','PIN')
                     cur=db.execute("INSERT INTO invoices(code,request_key,supplier_id,reference,business_date,department_id,notes,subtotal_cents,tax_basis,tax_cents,total_cents,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,'draft',?,?)",(c,key,*values,stamp,stamp));pk=cur.lastrowid
-                    db.executemany('INSERT INTO invoice_lines(invoice_id,product_id,name,unit,quantity,price_cents,total_cents) VALUES(?,?,?,?,?,?,?)',[(pk,*l) for l in lines]);db.execute('UPDATE invoices SET kind=? WHERE id=?',(data.get('kind','expense'),pk));audit(db,'invoice',pk,'create_draft',{'code':c,'total_cents':values[-1]});result=invoice(db,pk)
-                elif path.startswith('/api/invoices/') and method=='PUT':
-                    pk=int(path.rsplit('/',1)[1]);old=require(db,'invoices',pk)
-                    if old['status']!='draft': raise ValueError('الفاتورة الملغاة لا تعدل')
-                    if data.get('revision')!=old['revision']: return self.send(409,{'error':'الفاتورة تغيرت من نافذة أخرى. أعد فتحها قبل التعديل.'})
+                    db.executemany('INSERT INTO invoice_lines(invoice_id,product_id,name,unit,quantity,price_cents,total_cents) VALUES(?,?,?,?,?,?,?)',[(pk,*l) for l in lines]);db.execute('UPDATE invoices SET kind=? WHERE id=?',(data.get('kind','expense'),pk));payables.set_invoice_terms(db,pk,data);audit(db,'invoice',pk,'create_draft',{'code':c,'total_cents':values[-1]});result=invoice(db,pk)
+                elif len(parts)==4 and parts[:2]==['api','invoices'] and parts[3]=='post' and method=='POST':
+                    result=payables.post_invoice(db,ident(int(parts[2])),data)
+                elif len(parts)==3 and parts[:2]==['api','invoices'] and method=='PUT':
+                    pk=ident(int(parts[2]));old=invoice(db,pk)
+                    if old['status']!='draft': raise ValueError('الفاتورة المعتمدة أو الملغاة لا تعدل؛ استخدم مستند المرتجع عند الحاجة')
+                    if isinstance(data.get('revision'),bool) or not isinstance(data.get('revision'),int) or data.get('revision')!=old['revision']: raise accounting.ConflictError('الفاتورة تغيرت من نافذة أخرى. أعد فتحها قبل التعديل.')
                     if data.get('action')=='cancel':
                         db.execute("UPDATE invoices SET status='cancelled',revision=revision+1,updated_at=? WHERE id=?",(now(),pk));audit(db,'invoice',pk,'cancel_draft',{'code':old['code']})
                     else:
                         values,lines=invoice_payload(db,data)
                         db.execute('UPDATE invoices SET supplier_id=?,reference=?,business_date=?,department_id=?,notes=?,subtotal_cents=?,tax_basis=?,tax_cents=?,total_cents=?,revision=revision+1,updated_at=? WHERE id=?',(*values,now(),pk))
-                        db.execute('DELETE FROM invoice_lines WHERE invoice_id=?',(pk,));db.executemany('INSERT INTO invoice_lines(invoice_id,product_id,name,unit,quantity,price_cents,total_cents) VALUES(?,?,?,?,?,?,?)',[(pk,*l) for l in lines]);db.execute('UPDATE invoices SET kind=? WHERE id=?',(data.get('kind','expense'),pk));audit(db,'invoice',pk,'update_draft',{'previous_total_cents':old['total_cents'],'total_cents':values[-1]})
+                        db.execute('DELETE FROM invoice_lines WHERE invoice_id=?',(pk,));db.executemany('INSERT INTO invoice_lines(invoice_id,product_id,name,unit,quantity,price_cents,total_cents) VALUES(?,?,?,?,?,?,?)',[(pk,*l) for l in lines]);db.execute('UPDATE invoices SET kind=? WHERE id=?',(data.get('kind','expense'),pk));payables.set_invoice_terms(db,pk,data);audit(db,'invoice',pk,'update_draft',{'previous_total_cents':old['total_cents'],'total_cents':values[-1]})
                     result=invoice(db,pk)
+                elif path in ('/api/supplier-payment-preview','/api/payment-preview') and method=='POST':
+                    result=supplier_payments.allocation_preview(db,data)
+                elif path=='/api/supplier-payments' and method=='POST':
+                    result=supplier_payments.save_payment(db,data)
+                elif len(parts)==3 and parts[:2]==['api','supplier-payments'] and method=='PUT':
+                    result=supplier_payments.update_payment(db,ident(int(parts[2])),data)
+                elif len(parts)==4 and parts[:2]==['api','supplier-payments'] and parts[3]=='post' and method=='POST':
+                    result=supplier_payments.approve_payment(db,ident(int(parts[2])),data)
+                elif len(parts)==4 and parts[:2]==['api','supplier-payments'] and parts[3]=='clear' and method=='POST':
+                    result=supplier_payments.clear_cheque(db,ident(int(parts[2])),data)
+                elif path=='/api/supplier-returns' and method=='POST':
+                    if 'id' in data: raise ValueError('استخدم تعديل مستند المرتجع المحفوظ')
+                    result=payables.save_return(db,data)
+                elif len(parts)==3 and parts[:2]==['api','supplier-returns'] and method=='PUT':
+                    result=payables.save_return(db,{**data,'id':ident(int(parts[2]))})
+                elif len(parts)==4 and parts[:2]==['api','supplier-returns'] and parts[3]=='post' and method=='POST':
+                    result=payables.approve_return(db,ident(int(parts[2])),data)
                 elif path=='/api/backups' and method=='POST':
                     backup_dir=DB.parent/'backups';backup_dir.mkdir(exist_ok=True);dest=backup_dir/(datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S-')+secrets.token_hex(3)+'.sqlite')
                     with sqlite3.connect(dest) as target,connect() as source:
