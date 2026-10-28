@@ -15,6 +15,7 @@ from decimal import Decimal, InvalidOperation
 import accounting
 import accounting_periods
 import payables
+import withholding
 
 
 def _now():
@@ -152,6 +153,7 @@ def initialize(db):
         db.execute('''INSERT OR IGNORE INTO account_mappings(module,role,label,account_id,allowed_classes,status,expected_side,updated_at)
             VALUES('الموردون','issued_cheques','شيكات صادرة للموردين تحت التحصيل',?,'["2"]','proposed','credit',?)''',
                    (account['id'], _now()))
+    withholding.initialize(db)
 
 
 def payment_methods():
@@ -253,11 +255,16 @@ def _payload(db, data):
         raise ValueError('التوزيع اليدوي متاح عند اختيار التخصيص اليدوي فقط')
     if type(data.get('allow_advance', False)) is not bool:
         raise ValueError('اختيار الدفعة المقدمة غير صحيح')
-    return {'supplier_id': supplier_id, 'payment_date': _date(data.get('payment_date'), 'تاريخ السداد'),
+    result = {'supplier_id': supplier_id, 'payment_date': _date(data.get('payment_date'), 'تاريخ السداد'),
             'amount_cents': _amount(data), 'currency': 'EGP', 'method': method,
             'funding_account_id': funding['id'], 'allocation_mode': mode, 'target_invoice_id': target,
             'requested_allocations': allocations, 'details': _details(data.get('details', {}), method),
             'allow_advance': data.get('allow_advance', False), 'notes': _text(data, 'notes', 2000)}
+    # Omitted and explicit-null both mean legacy no-withholding. Keeping this
+    # key out of that normalized payload preserves pre-upgrade request hashes.
+    if data.get('withholding_code_id') is not None:
+        result['withholding_code_id'] = _id(data['withholding_code_id'])
+    return result
 
 
 def account_balance(db, account_id, as_of=None):
@@ -275,7 +282,7 @@ def funding_balances(db, as_of=None):
             for row in db.execute("SELECT id,code,name FROM accounts WHERE active=1 AND posting=1 AND normal_side='debit' AND (code LIKE '111%' OR code LIKE '112%') ORDER BY code")]
 
 
-def _preview(db, value):
+def _preview(db, value, exclude_payment_id=None):
     supplier_id, payment_date, amount = value['supplier_id'], value['payment_date'], value['amount_cents']
     import supplier_settlements
     # Capacity must remain valid at every future accounting boundary. An
@@ -325,8 +332,11 @@ def _preview(db, value):
     if allocated > ceiling:
         raise ValueError('التوزيع يتجاوز صافي المستحق للمورد؛ راجع أرصدة المرتجعات والدفعات المقدمة أولًا')
     advance = amount - allocated
+    if value.get('withholding_code_id') and advance:
+        raise ValueError('الخصم تحت حساب الضريبة يطبق على سداد الفواتير فقط؛ افصل الدفعة المقدمة في سند آخر')
+    tax = withholding.prepare(db, value, allocations, exclude_payment_id)
     before = account_balance(db, value['funding_account_id'], payment_date)
-    after = before if value['method'] == 'cheque' else before - amount
+    after = before if value['method'] == 'cheque' else before - tax['net_cash_cents']
     warnings = []
     if value['method'] != 'cheque' and after < 0:
         warnings.append('الرصيد الدفتري لمصدر السداد غير كافٍ؛ راجع الأرصدة الافتتاحية والحركات قبل الاعتماد.')
@@ -336,7 +346,7 @@ def _preview(db, value):
         warnings.append('توجد دفعات مقدمة سابقة للمورد لم تطبق على فواتير بعد.')
     if advance and not value['allow_advance']:
         warnings.append('يتبقى مبلغ غير موزع؛ وزعه على الفواتير أو اختر تسجيله دفعة مقدمة صراحةً.')
-    return {'currency': 'EGP', 'allocations': allocations, 'allocated_cents': allocated, 'advance_cents': advance,
+    return {**tax, 'currency': 'EGP', 'allocations': allocations, 'allocated_cents': allocated, 'advance_cents': advance,
             'net_payable_cents': balances['net_payable_cents'], 'outstanding_cents': balances['outstanding_cents'],
             'payable_balance_cents': balances.get('payable_balance_cents', balances['net_payable_cents']),
             'available_payable_cents': ceiling,
@@ -376,7 +386,7 @@ def save_payment(db, data):
             raise accounting.ConflictError('مفتاح الطلب مستخدم لسداد مختلف؛ أعد فتح السداد المحفوظ')
         return get_payment(db, old['id'])
     accounting_periods.assert_open(db, value['payment_date'])
-    _preview(db, value)
+    preview = _preview(db, value)
     bank, number = _cheque_unique(db, value)
     stamp = _now()
     cursor = db.execute('''INSERT INTO supplier_payments(code,request_key,request_fingerprint,supplier_id,payment_date,amount_cents,
@@ -385,6 +395,7 @@ def save_payment(db, data):
         (_next_code(db), key, digest, value['supplier_id'], value['payment_date'], value['amount_cents'], value['method'],
          _json(value['details']), value['funding_account_id'], value['allocation_mode'], value['target_invoice_id'],
          _json(value['requested_allocations']), int(value['allow_advance']), value['notes'], bank, number, stamp, stamp))
+    withholding.save_snapshot(db, cursor.lastrowid, preview)
     _audit(db, cursor.lastrowid, 'create_draft', {'amount_cents': value['amount_cents'], 'method': value['method']})
     return get_payment(db, cursor.lastrowid)
 
@@ -408,7 +419,7 @@ def update_payment(db, payment_id, data):
         return get_payment(db, payment_id)
     value = _payload(db, data)
     accounting_periods.assert_document_dates(db, value['payment_date'], old['payment_date'])
-    _preview(db, value)
+    preview = _preview(db, value, payment_id)
     bank, number = _cheque_unique(db, value, payment_id)
     db.execute('''UPDATE supplier_payments SET supplier_id=?,payment_date=?,amount_cents=?,method=?,details=?,funding_account_id=?,
         allocation_mode=?,target_invoice_id=?,requested_allocations=?,allow_advance=?,notes=?,cheque_bank_key=?,cheque_number_key=?,
@@ -416,6 +427,7 @@ def update_payment(db, payment_id, data):
         (value['supplier_id'], value['payment_date'], value['amount_cents'], value['method'], _json(value['details']), value['funding_account_id'],
          value['allocation_mode'], value['target_invoice_id'], _json(value['requested_allocations']), int(value['allow_advance']),
          value['notes'], bank, number, _now(), payment_id))
+    withholding.save_snapshot(db, payment_id, preview)
     _audit(db, payment_id, 'update_draft', {'amount_cents': value['amount_cents']})
     return get_payment(db, payment_id)
 
@@ -433,14 +445,15 @@ def approve_payment(db, payment_id, data):
     if row['status'] != 'draft':
         raise ValueError('السداد الملغى لا يعتمد')
     accounting_periods.assert_open(db, row['payment_date'])
-    saved = _saved_payload(row)
+    saved = withholding.enrich_payment(db, _saved_payload(row))
     if accounting.get_settings(db)['base_currency'] != 'EGP':
         raise ValueError('راجع العملة الأساسية؛ سند السداد محفوظ بالجنيه المصري')
     # Revalidate account/details and live balances: a draft is not a reservation.
     _funding(db, row['funding_account_id'], row['method'])
     _details(saved['details'], row['method'])
     _cheque_unique(db, saved, payment_id)
-    preview = _preview(db, saved)
+    preview = _preview(db, saved, payment_id)
+    withholding.validate_for_post(db, payment_id, preview)
     if not preview['can_approve_allocation']:
         raise ValueError('وزع كامل السداد أو اختر تسجيل المتبقي دفعة مقدمة قبل الاعتماد')
     payables.mapping_account(db, 'الموردون', 'payable_control')
@@ -464,7 +477,13 @@ def approve_payment(db, payment_id, data):
         payable_ids.update(item['account_id'] for item in db.execute("SELECT account_id FROM account_mappings WHERE module='الموردون' AND role IN('payable_control','capital_payable_control')"))
         if funding_id in payable_ids:
             raise ValueError('حساب الشيكات الصادرة يجب أن يكون التزامًا مستقلًا عن حساب الموردين الرقابي')
-    lines.append({'account_id': funding_id, 'debit_cents': 0, 'credit_cents': row['amount_cents'], 'supplier_id': row['supplier_id']})
+    if preview['withholding_cents']:
+        tax_account = preview['withholding']['account_id']
+        if tax_account == funding_id or tax_account in by_account:
+            raise ValueError('حساب الخصم الضريبي يجب أن يكون مستقلًا عن حساب المورد ومصدر السداد')
+        lines.append({'account_id': tax_account, 'debit_cents': 0,
+                      'credit_cents': preview['withholding_cents'], 'supplier_id': row['supplier_id']})
+    lines.append({'account_id': funding_id, 'debit_cents': 0, 'credit_cents': preview['net_cash_cents'], 'supplier_id': row['supplier_id']})
     journal_id = payables.create_journal(db, 'supplier_payment', payment_id, row['payment_date'], lines)
     for allocation in preview['allocations']:
         db.execute('INSERT INTO payment_allocations(payment_id,invoice_id,amount_cents) VALUES(?,?,?)',
@@ -472,7 +491,8 @@ def approve_payment(db, payment_id, data):
     db.execute("UPDATE supplier_payments SET status='posted',advance_cents=?,journal_entry_id=?,cheque_status=?,revision=revision+1,updated_at=? WHERE id=?",
                (preview['advance_cents'], journal_id, 'issued' if row['method'] == 'cheque' else None, _now(), payment_id))
     _audit(db, payment_id, 'post', {'journal_entry_id': journal_id, 'allocated_cents': preview['allocated_cents'],
-                                 'advance_cents': preview['advance_cents'], 'warnings': preview['warnings']})
+                                 'advance_cents': preview['advance_cents'], 'withholding_cents': preview['withholding_cents'],
+                                 'net_cash_cents': preview['net_cash_cents'], 'warnings': preview['warnings']})
     return get_payment(db, payment_id)
 
 
@@ -500,11 +520,17 @@ def clear_cheque(db, payment_id, data):
     if clearance_date < max(row['payment_date'], json.loads(row['details'])['cheque_date']):
         raise ValueError('تحصيل الشيك لا يسبق تاريخ إصداره أو سنده')
     # Debit the actual liability credited on issue, even if mappings later change.
-    liability = db.execute('''SELECT l.account_id FROM journal_lines l JOIN accounts a ON a.id=l.account_id
-        WHERE l.journal_id=? AND l.credit_cents>0 AND a.code LIKE '2%' ''', (row['journal_entry_id'],)).fetchone()
-    if not liability:
+    tax = withholding.enrich_payment(db, _saved_payload(row))
+    tax_account = tax['withholding']['account_id'] if tax.get('withholding') else None
+    liabilities = db.execute('''SELECT l.account_id,SUM(l.credit_cents) credit_cents
+        FROM journal_lines l JOIN accounts a ON a.id=l.account_id
+        WHERE l.journal_id=? AND l.credit_cents>0 AND a.code LIKE '2%'
+        AND (? IS NULL OR l.account_id<>?) GROUP BY l.account_id''',
+        (row['journal_entry_id'], tax_account, tax_account)).fetchall()
+    amount = withholding.net_cash(db, payment_id, row['amount_cents'])
+    if len(liabilities) != 1 or liabilities[0]['credit_cents'] != amount:
         raise ValueError('قيد إصدار الشيك لا يحتوي حساب التزام صحيح')
-    amount = row['amount_cents']
+    liability = liabilities[0]
     journal_id = payables.create_journal(db, 'supplier_cheque_clearance', payment_id, clearance_date,
         [{'account_id': liability['account_id'], 'debit_cents': amount, 'credit_cents': 0, 'supplier_id': row['supplier_id']},
          {'account_id': bank['id'], 'debit_cents': 0, 'credit_cents': amount, 'supplier_id': row['supplier_id']}])
@@ -541,7 +567,7 @@ def get_payment(db, payment_id):
     if payables._has_table(db, 'supplier_payment_reversals'):
         import supplier_adjustments
         result = supplier_adjustments.payment_overlay(db, result, '9999-12-31')
-    return result
+    return withholding.enrich_payment(db, result)
 
 
 def list_payments(db, supplier_id=None):

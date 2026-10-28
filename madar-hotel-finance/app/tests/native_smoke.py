@@ -102,6 +102,28 @@ def create(*a,**kw):
             else:raise AssertionError('Native ledger PDF was not created')
             assert output.read_bytes().startswith(b'%PDF')
             result['ledger_pdf_bytes']=output.stat().st_size
+            w.run_js('document.querySelector("#ledger-reports-window [data-ledger-action=close]").click()')
+            w.run_js('WithholdingSetup.codes()')
+            for _ in range(100):
+                if evaluate('Boolean(document.querySelector("#withholding-setup-window[open] [data-withholding-action=new-code]"))'):break
+                time.sleep(.1)
+            else:raise AssertionError('Native withholding setup did not load')
+            result['withholding_setup']=evaluate('document.querySelector("#withholding-title").innerText')
+            w.run_js('document.querySelector("#withholding-setup-window [data-withholding-action=close]").click()')
+            w.run_js('WithholdingSetup.report("2026-01-01","2026-12-31")')
+            for _ in range(100):
+                if evaluate('Boolean(document.querySelector("#withholding-setup-window[open] [data-withholding-action=print-report]"))'):break
+                time.sleep(.1)
+            else:raise AssertionError('Native withholding report did not load')
+            ImageGrab.grab().save(str(Path(__file__).with_name('withholding-native.png')))
+            output.unlink()
+            w.run_js('document.querySelector("#withholding-setup-window [data-withholding-action=print-report]").click()')
+            for _ in range(100):
+                if output.exists() and output.stat().st_size>100:break
+                time.sleep(.1)
+            else:raise AssertionError('Native withholding PDF was not created')
+            assert output.read_bytes().startswith(b'%PDF')
+            result['withholding_pdf_bytes']=output.stat().st_size
             result['ok']=True
         except BaseException as e:result['error']=str(e)
         finally:w.destroy()

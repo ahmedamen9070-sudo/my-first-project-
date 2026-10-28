@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """A&M Accounting Hotel for Audit &Control development application: single operator, isolated draft purchasing workflow."""
 import argparse, json, os, sqlite3, secrets, mimetypes, shutil, tempfile
-import accounting, payables, supplier_payments, supplier_settlements, supplier_adjustments, taxation, accounting_periods, ledger_reports
+import accounting, payables, supplier_payments, supplier_settlements, supplier_adjustments, taxation, accounting_periods, ledger_reports, withholding
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -223,6 +223,11 @@ class Handler(BaseHTTPRequestHandler):
                         db.execute('BEGIN')
                         return self.send(200,ledger_reports.account_ledger(db,ident(int(args.get('account_id',[''])[0])),args.get('from_date',[None])[0],args.get('to_date',[None])[0],ident(int(supplier)) if supplier else None))
                     if path=='/api/tax-config':return self.send(200,taxation.snapshot(db))
+                    if path=='/api/withholding-config':return self.send(200,withholding.snapshot(db))
+                    if path=='/api/withholding-report':
+                        supplier=args.get('supplier_id',[''])[0]
+                        db.execute('BEGIN')
+                        return self.send(200,withholding.report(db,args.get('from_date',[None])[0],args.get('to_date',[None])[0],ident(int(supplier)) if supplier else None))
                     if path=='/api/tax-report':
                         end=args.get('to_date',args.get('as_of',[None]))[0]
                         start=args.get('from_date',[end[:4]+'-01-01' if end else None])[0]
@@ -304,6 +309,10 @@ class Handler(BaseHTTPRequestHandler):
                 db.execute('BEGIN IMMEDIATE')
                 if path=='/api/tax-settings' and method=='PUT':
                     result=taxation.update_settings(db,data)
+                elif path=='/api/withholding-codes' and method=='POST':
+                    result=withholding.create_code(db,data)
+                elif len(parts)==3 and parts[:2]==['api','withholding-codes'] and method=='PUT':
+                    result=withholding.update_code(db,ident(int(parts[2])),data)
                 elif path=='/api/tax-codes' and method=='POST':
                     result=taxation.create_code(db,data)
                 elif len(parts)==3 and parts[:2]==['api','tax-codes'] and method=='PUT':
