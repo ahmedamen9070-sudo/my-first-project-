@@ -124,6 +124,22 @@ def create(*a,**kw):
             else:raise AssertionError('Native withholding PDF was not created')
             assert output.read_bytes().startswith(b'%PDF')
             result['withholding_pdf_bytes']=output.stat().st_size
+            w.run_js('document.querySelector("#withholding-setup-window [data-withholding-action=close]").click()')
+            w.run_js('WithholdingRemittances.balances("2026-12-31")')
+            for _ in range(100):
+                if evaluate('Boolean(document.querySelector("#withholding-remittance-window[open] [data-remittance-action=print-balances]"))'):break
+                time.sleep(.1)
+            else:raise AssertionError('Native withholding remittance balances did not load')
+            result['remittance_balances']=evaluate('document.querySelector("#remittance-title").innerText')
+            ImageGrab.grab().save(str(Path(__file__).with_name('remittance-native.png')))
+            output.unlink()
+            w.run_js('document.querySelector("#withholding-remittance-window [data-remittance-action=print-balances]").click()')
+            for _ in range(100):
+                if output.exists() and output.stat().st_size>100:break
+                time.sleep(.1)
+            else:raise AssertionError('Native remittance balances PDF was not created')
+            assert output.read_bytes().startswith(b'%PDF')
+            result['remittance_pdf_bytes']=output.stat().st_size
             result['ok']=True
         except BaseException as e:result['error']=str(e)
         finally:w.destroy()

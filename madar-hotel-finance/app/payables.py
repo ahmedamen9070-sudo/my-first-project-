@@ -697,7 +697,8 @@ def _advance_account_ids(db):
 def _statement_document(db, row):
     lookup = {'supplier_invoice': ('invoices', 'id'), 'supplier_return': ('supplier_returns', 'id'),
               'supplier_payment': ('supplier_payments', 'id'), 'supplier_cheque_clearance': ('supplier_payments', 'id'),
-              'supplier_settlement': ('supplier_settlements', 'id'), 'supplier_refund': ('supplier_refunds', 'id')}
+              'supplier_settlement': ('supplier_settlements', 'id'), 'supplier_refund': ('supplier_refunds', 'id'),
+              'withholding_remittance': ('withholding_remittances', 'id')}
     source_type = row['type']
     if source_type in lookup:
         table, key = lookup[source_type]
@@ -713,6 +714,10 @@ def _statement_document(db, row):
         doc = db.execute('SELECT id FROM supplier_refund_reversals WHERE id=?', (row['document_id'],)).fetchone()
         if doc:
             row['code'] = f"SRR-{doc['id']:06d}"
+    elif source_type == 'withholding_remittance_reversal' and _has_table(db, 'withholding_remittance_reversals'):
+        doc = db.execute('SELECT id FROM withholding_remittance_reversals WHERE id=?', (row['document_id'],)).fetchone()
+        if doc:
+            row['code'] = f"WTRR-{doc['id']:06d}"
     elif source_type in ('supplier_payment_reversal', 'supplier_cheque_bounce') and _has_table(db, 'supplier_payment_reversals'):
         doc = db.execute('SELECT p.code FROM supplier_payments p JOIN supplier_payment_reversals r ON r.payment_id=p.id WHERE r.id=?', (row['document_id'],)).fetchone()
         if doc:
@@ -739,6 +744,8 @@ def statement(db, supplier_id, as_of=None):
               'supplier_cheque_clearance': 'صرف شيك مورد', 'supplier_settlement': 'تسوية رصيد مورد',
               'supplier_settlement_reversal': 'عكس تسوية مورد', 'supplier_refund': 'استرداد من مورد',
               'supplier_refund_reversal': 'عكس استرداد من مورد',
+              'withholding_remittance': 'توريد خصم ضريبي',
+              'withholding_remittance_reversal': 'عكس توريد خصم ضريبي',
               'supplier_payment_reversal': 'عكس سداد مورد', 'supplier_cheque_bounce': 'إلغاء صرف شيك مرتد'}
     for raw in raw_rows:
         row = dict(raw)

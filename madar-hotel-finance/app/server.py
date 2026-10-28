@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """A&M Accounting Hotel for Audit &Control development application: single operator, isolated draft purchasing workflow."""
 import argparse, json, os, sqlite3, secrets, mimetypes, shutil, tempfile
-import accounting, payables, supplier_payments, supplier_settlements, supplier_adjustments, taxation, accounting_periods, ledger_reports, withholding
+import accounting, payables, supplier_payments, supplier_settlements, supplier_adjustments, taxation, accounting_periods, ledger_reports, withholding, withholding_balances, withholding_remittances
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -44,6 +44,7 @@ def init():
         supplier_adjustments.initialize(db)
         taxation.initialize(db)
         accounting_periods.initialize(db)
+        withholding_remittances.initialize(db)
 
 def now(): return datetime.now(timezone.utc).isoformat(timespec='seconds')
 def code(db,kind,prefix):
@@ -224,6 +225,13 @@ class Handler(BaseHTTPRequestHandler):
                         return self.send(200,ledger_reports.account_ledger(db,ident(int(args.get('account_id',[''])[0])),args.get('from_date',[None])[0],args.get('to_date',[None])[0],ident(int(supplier)) if supplier else None))
                     if path=='/api/tax-config':return self.send(200,taxation.snapshot(db))
                     if path=='/api/withholding-config':return self.send(200,withholding.snapshot(db))
+                    if path=='/api/withholding-balances':
+                        db.execute('BEGIN')
+                        return self.send(200,withholding_balances.balance_report(db,args.get('as_of',[None])[0],args.get('period_from',[None])[0],args.get('period_to',[None])[0]))
+                    if path=='/api/withholding-remittances':
+                        return self.send(200,withholding_remittances.list_remittances(db,args.get('as_of',[None])[0]))
+                    if len(parts)==3 and parts[:2]==['api','withholding-remittances']:
+                        return self.send(200,withholding_remittances.detail(db,ident(int(parts[2])),args.get('as_of',[None])[0]))
                     if path=='/api/withholding-report':
                         supplier=args.get('supplier_id',[''])[0]
                         db.execute('BEGIN')
@@ -313,6 +321,14 @@ class Handler(BaseHTTPRequestHandler):
                     result=withholding.create_code(db,data)
                 elif len(parts)==3 and parts[:2]==['api','withholding-codes'] and method=='PUT':
                     result=withholding.update_code(db,ident(int(parts[2])),data)
+                elif path=='/api/withholding-remittance-preview' and method=='POST':
+                    result=withholding_remittances.preview(db,data)
+                elif path=='/api/withholding-remittances' and method=='POST':
+                    result=withholding_remittances.save(db,data)
+                elif len(parts)==3 and parts[:2]==['api','withholding-remittances'] and method=='PUT':
+                    result=withholding_remittances.save(db,data,ident(int(parts[2])))
+                elif len(parts)==4 and parts[:2]==['api','withholding-remittances'] and parts[3] in ('post','reverse') and method=='POST':
+                    result=(withholding_remittances.approve if parts[3]=='post' else withholding_remittances.reverse)(db,ident(int(parts[2])),data)
                 elif path=='/api/tax-codes' and method=='POST':
                     result=taxation.create_code(db,data)
                 elif len(parts)==3 and parts[:2]==['api','tax-codes'] and method=='PUT':

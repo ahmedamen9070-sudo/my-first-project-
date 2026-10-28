@@ -19,6 +19,7 @@ DRAFTS = (
     ('payment', 'supplier_payments', 'payment_date', 'سداد'),
     ('settlement', 'supplier_settlements', 'business_date', 'تسوية'),
     ('refund', 'supplier_refunds', 'business_date', 'استرداد'),
+    ('withholding_remittance', 'withholding_remittances', 'business_date', 'توريد خصم ضريبي'),
 )
 
 
@@ -166,6 +167,16 @@ def preview(db, month):
     # Only compact diagnostics are saved in immutable close snapshots. Detailed
     # dated supplier/journal drilldown stays available from reconciliation.
     reconciliation = {key: report[key] for key in ('matched', 'totals', 'counts')}
+    withholding_reconciliation = None
+    if _has(db, 'payment_withholding'):
+        import withholding_balances
+        tax_review = withholding_balances.balance_report(db, as_of=end)
+        withholding_reconciliation = {
+            'matched': tax_review['matched'],
+            'totals': tax_review.get('all_totals', tax_review.get('totals', {})),
+            'exception_count': len(tax_review.get('exceptions', [])),
+            'mismatched_accounts': sum(not row.get('matched', True) for row in tax_review.get('accounts', [])),
+        }
     blockers = []
     if period['status'] == 'closed':
         blockers.append({'code': 'already_closed', 'message': 'الفترة مقفولة بالفعل.', 'count': 1})
@@ -184,9 +195,14 @@ def preview(db, month):
     if not report['matched']:
         blockers.append({'code': 'supplier_reconciliation', 'message': 'مطابقة الموردين والدفعات المقدمة مع القيود تحتاج مراجعة.',
                          'count': max(report['counts'].get('exception_count', 0), report['counts'].get('mismatched_suppliers', 0), report['counts'].get('mismatched_accounts', 0), 1)})
+    if withholding_reconciliation and not withholding_reconciliation['matched']:
+        blockers.append({'code': 'withholding_reconciliation',
+                         'message': 'مطابقة الخصم الضريبي والتوريدات مع القيود تحتاج مراجعة.',
+                         'count': max(withholding_reconciliation['exception_count'], withholding_reconciliation['mismatched_accounts'], 1)})
     return {'period': period, 'journal_totals': totals, 'unbalanced_journals': unbalanced, 'unsealed_journals': unsealed,
             'earlier_unbalanced_journals': earlier_unbalanced, 'earlier_unsealed_journals': earlier_unsealed,
             'pending_drafts': pending, 'earlier_pending_drafts': earlier, 'draft_counts': counts, 'reconciliation': reconciliation,
+            'withholding_reconciliation': withholding_reconciliation,
             'events': [_event(db, row['id']) for row in db.execute('SELECT id FROM accounting_period_events WHERE month=? ORDER BY id', (month,))] if _has(db, 'accounting_period_events') else [],
             'blockers': blockers, 'can_close': not blockers,
             'warnings': ['الأرصدة الافتتاحية لم تؤكد في هذه المرحلة؛ القفل مراجعة للحركات المسجلة فقط.',

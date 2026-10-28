@@ -173,6 +173,7 @@ def _document(db, source_type, source_id, fallback):
         'supplier_invoice': 'invoices', 'supplier_return': 'supplier_returns',
         'supplier_payment': 'supplier_payments', 'supplier_cheque_clearance': 'supplier_payments',
         'supplier_settlement': 'supplier_settlements', 'supplier_refund': 'supplier_refunds',
+        'withholding_remittance': 'withholding_remittances',
     }
     table = tables.get(source_type)
     if table and _has(db, table):
@@ -199,6 +200,13 @@ def _document(db, source_type, source_id, fallback):
             WHERE r.id=?''', (source_id,)).fetchone()
         if result:
             return {'document_code': f"SRR-{result['id']:06d}", 'reference': result['reference'],
+                    'original_document_code': result['original_document_code']}
+    if source_type == 'withholding_remittance_reversal' and _has(db, 'withholding_remittance_reversals'):
+        result = db.execute('''SELECT r.id,r.reference,m.code original_document_code
+            FROM withholding_remittance_reversals r JOIN withholding_remittances m ON m.id=r.remittance_id
+            WHERE r.id=?''', (source_id,)).fetchone()
+        if result:
+            return {'document_code': f"WTRR-{result['id']:06d}", 'reference': result['reference'],
                     'original_document_code': result['original_document_code']}
     return {'document_code': fallback, 'reference': ''}
 
