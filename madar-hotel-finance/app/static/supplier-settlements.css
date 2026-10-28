@@ -4,3 +4,8 @@ body.reference-theme #supplier-settlement-window{max-width:1180px;width:calc(100
 
 /* Printing a document must hide any supplier file or picker below its window. */
 @media print{body.reference-theme dialog{display:none!important}body.reference-theme dialog::backdrop{display:none!important}}
+
+/* The correction keeps the original refund visible beside its dated opposite entry. */
+#supplier-settlement-window .ss-correction-heading{display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:18px;padding-bottom:14px;border-bottom:1px solid #e0e7ed}#supplier-settlement-window .ss-correction-heading strong{font-size:17px;color:#33516b;direction:ltr}#supplier-settlement-window .ss-correction-kpis{grid-template-columns:repeat(3,minmax(0,1fr))}#supplier-settlement-window .ss-correction-lines{min-width:620px}.ss-correction-lines tfoot td{border-top:2px solid #dce6ed;font-weight:bold;background:#f2f7fa}.ss-correction-lines bdi{font-variant-numeric:tabular-nums}
+@media(max-width:760px){#supplier-settlement-window .ss-correction-kpis{grid-template-columns:1fr}#supplier-settlement-window .ss-correction-heading{align-items:flex-start;flex-direction:column;gap:10px}}
+@media print{.print-only .ss-correction-lines{width:100%;min-width:0!important}.print-only .ss-correction-lines th,.print-only .ss-correction-lines td{font-size:10px!important;overflow-wrap:anywhere}}

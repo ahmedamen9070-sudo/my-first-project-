@@ -79,6 +79,29 @@ def create(*a,**kw):
             else:raise AssertionError('Native PDF was not created')
             assert output.read_bytes().startswith(b'%PDF')
             result['pdf_bytes']=output.stat().st_size
+            w.run_js('document.querySelector("[data-ss-action=close]").click()')
+            w.run_js('LedgerReports.trialBalance({from_date:"2026-01-01",to_date:"2026-12-31",include_zero:true})')
+            for _ in range(100):
+                if evaluate('Boolean(document.querySelector("#ledger-reports-window[open] .lr-trial-table"))'):break
+                time.sleep(.1)
+            else:raise AssertionError('Native trial balance did not load')
+            result['trial_balance']=evaluate('document.querySelector("#ledger-reports-title").innerText')
+            assert 'ميزان المراجعة' in result['trial_balance']
+            ImageGrab.grab().save(str(Path(__file__).with_name('trial-balance-native.png')))
+            cash=evaluate('accountingData.accounts.find(a=>a.code==="111002").id')
+            w.run_js('LedgerReports.ledger('+str(cash)+',{from_date:"2026-01-01",to_date:"2026-12-31"})')
+            for _ in range(100):
+                if evaluate('document.querySelector("#ledger-reports-title").innerText.includes("حركة الحساب")'):break
+                time.sleep(.1)
+            else:raise AssertionError('Native account ledger did not load')
+            output.unlink()
+            w.run_js('document.querySelector("#ledger-reports-window [data-ledger-action=print]").click()')
+            for _ in range(100):
+                if output.exists() and output.stat().st_size>100:break
+                time.sleep(.1)
+            else:raise AssertionError('Native ledger PDF was not created')
+            assert output.read_bytes().startswith(b'%PDF')
+            result['ledger_pdf_bytes']=output.stat().st_size
             result['ok']=True
         except BaseException as e:result['error']=str(e)
         finally:w.destroy()

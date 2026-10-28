@@ -56,6 +56,11 @@ def _source_supplier(db, source_type, source_id):
         'supplier_settlement_reversal': ('supplier_settlements', 'id'),
         'supplier_refund': ('supplier_refunds', 'id'),
     }
+    if source_type == 'supplier_refund_reversal':
+        if not _has_table(db, 'supplier_refund_reversals'):
+            return None
+        row = db.execute('SELECT r.supplier_id FROM supplier_refund_reversals rr JOIN supplier_refunds r ON r.id=rr.refund_id WHERE rr.id=?', (source_id,)).fetchone()
+        return row['supplier_id'] if row else None
     if source_type in ('supplier_payment_reversal', 'supplier_cheque_bounce'):
         if not _has_table(db, 'supplier_payment_reversals'):
             return None
@@ -92,7 +97,10 @@ def _advance_documents(db, supplier_id, as_of, advance_ids):
                 reverse_clause = ' AND NOT EXISTS(SELECT 1 FROM supplier_settlement_reversals r WHERE r.settlement_id=s.id AND r.business_date<=?)'
                 values.append(as_of)
             used = db.execute("SELECT COALESCE(SUM(s.amount_cents),0) FROM supplier_settlements s WHERE s.source_type='advance' AND s.source_id=? AND s.status='posted' AND s.business_date<=?" + reverse_clause, values).fetchone()[0]
-        refunded = db.execute("SELECT COALESCE(SUM(amount_cents),0) FROM supplier_refunds WHERE source_type='advance' AND source_id=? AND status='posted' AND business_date<=?", (payment['id'], as_of)).fetchone()[0] if _has_table(db, 'supplier_refunds') else 0
+        refunded = 0
+        if _has_table(db, 'supplier_refunds'):
+            refund_clause, refund_values = payables._refund_effective_filter(db, 'r', as_of)
+            refunded = db.execute("SELECT COALESCE(SUM(r.amount_cents),0) FROM supplier_refunds r WHERE r.source_type='advance' AND r.source_id=? AND r.status='posted' AND r.business_date<=?" + refund_clause, (payment['id'], as_of, *refund_values)).fetchone()[0]
         rows = db.execute("""SELECT DISTINCT l.account_id,j.id journal_id FROM journal_lines l JOIN journal_entries j ON j.id=l.journal_id
             WHERE j.sealed=1 AND j.source_type='supplier_payment' AND j.source_id=? AND l.debit_cents>0""", (payment['id'],)).fetchall()
         account_rows = [row for row in rows if row['account_id'] in advance_ids]

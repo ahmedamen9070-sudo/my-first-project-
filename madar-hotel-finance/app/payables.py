@@ -558,6 +558,13 @@ def _payment_effective_filter(db, alias, as_of):
     return f" AND NOT EXISTS(SELECT 1 FROM supplier_payment_reversals pr WHERE pr.payment_id={alias}.id AND pr.business_date<=?)", [as_of]
 
 
+def _refund_effective_filter(db, alias, as_of):
+    """An immutable refund releases its source only on its correction date."""
+    if not _has_table(db, 'supplier_refund_reversals'):
+        return '', []
+    return f" AND NOT EXISTS(SELECT 1 FROM supplier_refund_reversals rr WHERE rr.refund_id={alias}.id AND rr.business_date<=?)", [as_of]
+
+
 def _settlement_effects(db, supplier_id, as_of):
     targets, credit_sources, advances = {}, {}, 0
     if not (_has_table(db, 'supplier_settlements') and _has_table(db, 'settlement_allocations')):
@@ -580,7 +587,8 @@ def _settlement_effects(db, supplier_id, as_of):
 def _refund_effects(db, supplier_id, as_of):
     credit_sources, advances = {}, 0
     if _has_table(db, 'supplier_refunds'):
-        for row in db.execute("SELECT source_type,source_id,amount_cents FROM supplier_refunds WHERE supplier_id=? AND status='posted' AND business_date<=?", (supplier_id, as_of)):
+        clause, values = _refund_effective_filter(db, 'r', as_of)
+        for row in db.execute("SELECT r.source_type,r.source_id,r.amount_cents FROM supplier_refunds r WHERE r.supplier_id=? AND r.status='posted' AND r.business_date<=?" + clause, (supplier_id, as_of, *values)):
             if row['source_type'] == 'advance':
                 advances += row['amount_cents']
             else:
@@ -701,6 +709,10 @@ def _statement_document(db, row):
         doc = db.execute('SELECT code FROM supplier_settlements WHERE id=?', (row['document_id'],)).fetchone()
         if doc:
             row['code'] = doc['code'] + ' / عكس'
+    elif source_type == 'supplier_refund_reversal' and _has_table(db, 'supplier_refund_reversals'):
+        doc = db.execute('SELECT id FROM supplier_refund_reversals WHERE id=?', (row['document_id'],)).fetchone()
+        if doc:
+            row['code'] = f"SRR-{doc['id']:06d}"
     elif source_type in ('supplier_payment_reversal', 'supplier_cheque_bounce') and _has_table(db, 'supplier_payment_reversals'):
         doc = db.execute('SELECT p.code FROM supplier_payments p JOIN supplier_payment_reversals r ON r.payment_id=p.id WHERE r.id=?', (row['document_id'],)).fetchone()
         if doc:
@@ -726,6 +738,7 @@ def statement(db, supplier_id, as_of=None):
     labels = {'supplier_invoice': 'فاتورة مورد', 'supplier_return': 'مرتجع مورد', 'supplier_payment': 'سداد مورد',
               'supplier_cheque_clearance': 'صرف شيك مورد', 'supplier_settlement': 'تسوية رصيد مورد',
               'supplier_settlement_reversal': 'عكس تسوية مورد', 'supplier_refund': 'استرداد من مورد',
+              'supplier_refund_reversal': 'عكس استرداد من مورد',
               'supplier_payment_reversal': 'عكس سداد مورد', 'supplier_cheque_bounce': 'إلغاء صرف شيك مرتد'}
     for raw in raw_rows:
         row = dict(raw)
@@ -763,9 +776,14 @@ def ledger_summary(db, as_of=None):
         gross = db.execute("SELECT COALESCE(SUM(amount_cents),0) FROM supplier_payments WHERE status='posted' AND payment_date<=?", (as_of,)).fetchone()[0]
         clause, values = _payment_effective_filter(db, 'p', as_of)
         effective = db.execute("SELECT COALESCE(SUM(p.amount_cents),0) FROM supplier_payments p WHERE p.status='posted' AND p.payment_date<=?" + clause, (as_of, *values)).fetchone()[0]
-    refunds = db.execute("SELECT COALESCE(SUM(amount_cents),0) FROM supplier_refunds WHERE status='posted' AND business_date<=?", (as_of,)).fetchone()[0] if _has_table(db, 'supplier_refunds') else 0
+    gross_refunds, refunds = 0, 0
+    if _has_table(db, 'supplier_refunds'):
+        gross_refunds = db.execute("SELECT COALESCE(SUM(amount_cents),0) FROM supplier_refunds WHERE status='posted' AND business_date<=?", (as_of,)).fetchone()[0]
+        clause, values = _refund_effective_filter(db, 'r', as_of)
+        refunds = db.execute("SELECT COALESCE(SUM(r.amount_cents),0) FROM supplier_refunds r WHERE r.status='posted' AND r.business_date<=?" + clause, (as_of, *values)).fetchone()[0]
     return {'posted_invoices_cents': db.execute("SELECT COALESCE(SUM(i.total_cents),0) FROM invoices i JOIN invoice_postings p ON p.invoice_id=i.id WHERE i.status<>'cancelled' AND i.business_date<=?", (as_of,)).fetchone()[0],
             'returns_cents': db.execute("SELECT COALESCE(SUM(total_cents),0) FROM supplier_returns WHERE status='posted' AND business_date<=?", (as_of,)).fetchone()[0],
             'payments_cents': effective, 'gross_payments_cents': gross, 'reversed_payments_cents': gross-effective,
-            'refunds_cents': refunds, 'net_payable_cents': report['totals']['net_payable_cents'], 'advance_cents': report['totals']['advance_cents'],
+            'refunds_cents': refunds, 'gross_refunds_cents': gross_refunds, 'reversed_refunds_cents': gross_refunds-refunds,
+            'net_payable_cents': report['totals']['net_payable_cents'], 'advance_cents': report['totals']['advance_cents'],
             'journal_count': db.execute('SELECT COUNT(*) FROM journal_entries WHERE sealed=1 AND entry_date<=?', (as_of,)).fetchone()[0]}

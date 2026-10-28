@@ -46,6 +46,7 @@ def _amount(data):
 def initialize(db):
     for sql in [
         '''CREATE TABLE IF NOT EXISTS supplier_refunds(id INTEGER PRIMARY KEY,code TEXT NOT NULL UNIQUE,request_key TEXT NOT NULL UNIQUE,request_fingerprint TEXT NOT NULL,supplier_id INTEGER NOT NULL REFERENCES suppliers(id),source_type TEXT NOT NULL CHECK(source_type IN('advance','return_credit')),source_id INTEGER NOT NULL,business_date TEXT NOT NULL,reference TEXT NOT NULL,reason TEXT NOT NULL,notes TEXT NOT NULL DEFAULT '',method TEXT NOT NULL CHECK(method IN('cash','bank_transfer')),funding_account_id INTEGER NOT NULL REFERENCES accounts(id),details TEXT NOT NULL,amount_cents INTEGER NOT NULL CHECK(amount_cents>0),status TEXT NOT NULL CHECK(status IN('draft','posted','cancelled')),revision INTEGER NOT NULL DEFAULT 1,journal_id INTEGER REFERENCES journal_entries(id),created_at TEXT NOT NULL,updated_at TEXT NOT NULL)''',
+        '''CREATE TABLE IF NOT EXISTS supplier_refund_reversals(id INTEGER PRIMARY KEY,refund_id INTEGER NOT NULL UNIQUE REFERENCES supplier_refunds(id),business_date TEXT NOT NULL,reason TEXT NOT NULL,reference TEXT NOT NULL,journal_id INTEGER NOT NULL REFERENCES journal_entries(id),request_key TEXT NOT NULL UNIQUE,request_fingerprint TEXT NOT NULL,created_at TEXT NOT NULL)''',
         '''CREATE TABLE IF NOT EXISTS supplier_payment_reversals(id INTEGER PRIMARY KEY,payment_id INTEGER NOT NULL UNIQUE REFERENCES supplier_payments(id),business_date TEXT NOT NULL,reason TEXT NOT NULL,reference TEXT NOT NULL DEFAULT '',event_type TEXT NOT NULL CHECK(event_type IN('payment_reverse','cheque_cancel','cheque_bounce')),journal_id INTEGER NOT NULL REFERENCES journal_entries(id),clearance_journal_id INTEGER REFERENCES journal_entries(id),request_key TEXT NOT NULL UNIQUE,request_fingerprint TEXT NOT NULL,created_at TEXT NOT NULL)''',
         '''CREATE TABLE IF NOT EXISTS supplier_cheque_events(id INTEGER PRIMARY KEY,payment_id INTEGER NOT NULL REFERENCES supplier_payments(id),action TEXT NOT NULL CHECK(action IN('stop','resume','cancel','bounce')),business_date TEXT NOT NULL,reason TEXT NOT NULL,reference TEXT NOT NULL,reversal_id INTEGER REFERENCES supplier_payment_reversals(id),request_key TEXT NOT NULL UNIQUE,request_fingerprint TEXT NOT NULL,created_at TEXT NOT NULL)''',
         'CREATE INDEX IF NOT EXISTS supplier_refunds_source ON supplier_refunds(source_type,source_id,status,business_date)',
@@ -54,7 +55,7 @@ def initialize(db):
         db.execute(sql)
     if 'reference' not in {r['name'] for r in db.execute('PRAGMA table_info(supplier_payment_reversals)')}:
         db.execute("ALTER TABLE supplier_payment_reversals ADD COLUMN reference TEXT NOT NULL DEFAULT ''")
-    for table, condition in [('supplier_refunds', "OLD.status='posted'"), ('supplier_payment_reversals', '1'), ('supplier_cheque_events', '1')]:
+    for table, condition in [('supplier_refunds', "OLD.status='posted'"), ('supplier_payment_reversals', '1'), ('supplier_refund_reversals', '1'), ('supplier_cheque_events', '1')]:
         for operation in ('UPDATE', 'DELETE'):
             db.execute(f'''CREATE TRIGGER IF NOT EXISTS adjustment_immutable_{table}_{operation.lower()} BEFORE {operation} ON {table} WHEN {condition} BEGIN SELECT RAISE(ABORT,'approved supplier adjustment is immutable'); END''')
 
@@ -63,7 +64,9 @@ def refund_consumption(db, source_type, source_id, as_of=None):
     if not _has(db, 'supplier_refunds'):
         return 0
     as_of = payables._as_of(as_of)
-    return db.execute("SELECT COALESCE(SUM(amount_cents),0) FROM supplier_refunds WHERE source_type=? AND source_id=? AND status='posted' AND business_date<=?", (source_type, source_id, as_of)).fetchone()[0]
+    clause = ' AND NOT EXISTS(SELECT 1 FROM supplier_refund_reversals rr WHERE rr.refund_id=r.id AND rr.business_date<=?)' if _has(db, 'supplier_refund_reversals') else ''
+    values = (source_type, source_id, as_of, as_of) if clause else (source_type, source_id, as_of)
+    return db.execute("SELECT COALESCE(SUM(r.amount_cents),0) FROM supplier_refunds r WHERE r.source_type=? AND r.source_id=? AND r.status='posted' AND r.business_date<=?" + clause, values).fetchone()[0]
 
 
 def payment_reversed(db, payment_id, as_of=None):
@@ -215,7 +218,7 @@ def approve_refund(db, refund_id, data):
     return get_refund(db, refund_id)
 
 
-def get_refund(db, refund_id):
+def get_refund(db, refund_id, as_of=None):
     result = _require(db, 'supplier_refunds', refund_id)
     result['details'] = json.loads(result['details'])
     supplier = _require(db, 'suppliers', result['supplier_id'])
@@ -226,7 +229,60 @@ def get_refund(db, refund_id):
                   voucher_title='إذن قبض من المورد' if result['method']=='cash' else 'إشعار استرداد بنكي من المورد')
     result['journal'] = payables.journal_detail(db, result['journal_id']) if result['journal_id'] else None
     result.pop('request_fingerprint', None)
+    as_of = payables._as_of(as_of if as_of is not None else '9999-12-31')
+    reversal = db.execute('SELECT * FROM supplier_refund_reversals WHERE refund_id=? AND business_date<=?', (refund_id, as_of)).fetchone() if _has(db, 'supplier_refund_reversals') else None
+    result['reversal'] = dict(reversal) if reversal else None
+    if result['reversal']:
+        result['reversal'].pop('request_fingerprint', None)
+        result['reversal']['code'] = f"SRR-{reversal['id']:06d}"
+        result['reversal']['journal'] = payables.journal_detail(db, reversal['journal_id'])
+    result['effective_status'] = 'reversed' if reversal else result['status']
+    result['adjustment_revision'] = 1 if reversal else 0
     return result
+
+
+def reverse_refund(db, refund_id, data):
+    """Append the opposite of a receipt and release its source on that date.
+
+    The original receipt, value date, allocations and journal stay unchanged.
+    The caller owns the write transaction, as with every financial operation.
+    """
+    if not isinstance(data, dict):
+        raise ValueError('بيانات عكس الاسترداد غير صحيحة')
+    old = _require(db, 'supplier_refunds', refund_id)
+    value = {'refund_id': old['id'], 'business_date': _date(data.get('business_date')),
+             'reference': _text(data, 'reference', 100, True), 'reason': _text(data, 'reason', 2000, True)}
+    key = _text(data, 'request_key', 100, True)
+    event_revision = data.get('event_revision', data.get('adjustment_revision', 0))
+    if type(data.get('revision')) is not int or type(event_revision) is not int:
+        raise accounting.ConflictError('أعد فتح مستند الاسترداد قبل العكس')
+    if 'event_revision' in data and 'adjustment_revision' in data and (type(data['adjustment_revision']) is not int or data['adjustment_revision'] != event_revision):
+        raise accounting.ConflictError('حالة عكس الاسترداد تغيرت؛ أعد فتح المستند')
+    # Replay is decided by saved financial facts before current lock/revision
+    # checks, so a successful request retried after month close creates nothing.
+    prior = db.execute('SELECT * FROM supplier_refund_reversals WHERE refund_id=? OR request_key=?', (refund_id, key)).fetchone()
+    if prior:
+        if prior['request_key'] != key or prior['refund_id'] != refund_id or prior['request_fingerprint'] != _fingerprint(value):
+            raise accounting.ConflictError('الاسترداد معكوس بالفعل أو مفتاح الطلب مستخدم لإجراء آخر')
+        return get_refund(db, refund_id)
+    if old['status'] != 'posted':
+        raise ValueError('العكس متاح للاسترداد المعتمد فقط')
+    payables._revision(data, old)
+    if event_revision != 0:
+        raise accounting.ConflictError('حالة عكس الاسترداد تغيرت؛ أعد فتح المستند')
+    accounting_periods.assert_open(db, value['business_date'])
+    if value['business_date'] < old['business_date']:
+        raise ValueError('تاريخ عكس الاسترداد لا يسبق تاريخ الاسترداد الأصلي')
+    original = payables.journal_detail(db, old['journal_id'])
+    if original['source_type'] != 'supplier_refund' or original['source_id'] != refund_id:
+        raise ValueError('قيد الاسترداد الأصلي لا يطابق المستند')
+    reversal_id = db.execute('SELECT COALESCE(MAX(id),0)+1 FROM supplier_refund_reversals').fetchone()[0]
+    journal_id = payables.create_journal(db, 'supplier_refund_reversal', reversal_id, value['business_date'], _opposite_lines(db, old['journal_id']))
+    db.execute('''INSERT INTO supplier_refund_reversals(id,refund_id,business_date,reason,reference,journal_id,request_key,request_fingerprint,created_at)
+        VALUES(?,?,?,?,?,?,?,?,?)''', (reversal_id, refund_id, value['business_date'], value['reason'], value['reference'], journal_id, key, _fingerprint(value), payables._now()))
+    payables._audit(db, 'supplier_refund_reversal', reversal_id, 'reverse_refund',
+                    {'refund_id': refund_id, 'journal_id': journal_id, 'business_date': value['business_date'], 'reference': value['reference'], 'reason': value['reason']})
+    return get_refund(db, refund_id)
 
 
 def list_refunds(db, supplier_id=None):
@@ -288,6 +344,12 @@ def _assert_dependencies_unused(db, payment, business_date):
     for kind, ident in sources:
         if refund_consumption(db, kind, ident, '9999-12-31'):
             raise ValueError('توجد عملية استرداد مرتبطة برصيد السداد؛ راجع المستند المرتبط قبل عكس السداد')
+        if _has(db, 'supplier_refund_reversals'):
+            refund_history = db.execute('''SELECT rr.business_date reversal_date FROM supplier_refunds f
+                LEFT JOIN supplier_refund_reversals rr ON rr.refund_id=f.id
+                WHERE f.source_type=? AND f.source_id=? AND f.status='posted' ''', (kind, ident))
+            if any(row['reversal_date'] is None or row['reversal_date'] > business_date for row in refund_history):
+                raise ValueError('توجد عملية استرداد مرتبطة؛ اعكسها أولًا واختر تاريخ عكس السداد بعد عكس الاسترداد')
         if not _has(db, 'supplier_settlements'):
             continue
         if not _has(db, 'supplier_settlement_reversals'):

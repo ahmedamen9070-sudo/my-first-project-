@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """A&M Accounting Hotel for Audit &Control development application: single operator, isolated draft purchasing workflow."""
 import argparse, json, os, sqlite3, secrets, mimetypes, shutil, tempfile
-import accounting, payables, supplier_payments, supplier_settlements, supplier_adjustments, taxation, accounting_periods
+import accounting, payables, supplier_payments, supplier_settlements, supplier_adjustments, taxation, accounting_periods, ledger_reports
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -213,6 +213,15 @@ class Handler(BaseHTTPRequestHandler):
             if path.startswith('/api/'):
                 with connect() as db:
                     if path=='/api/accounting':return self.send(200,accounting.snapshot(db))
+                    if path=='/api/trial-balance':
+                        include_zero=args.get('include_zero',['0'])[0]
+                        if include_zero not in ('0','1'):raise ValueError('اختيار عرض الحسابات الصفرية غير صحيح')
+                        db.execute('BEGIN')
+                        return self.send(200,ledger_reports.trial_balance(db,args.get('from_date',[None])[0],args.get('to_date',[None])[0],include_zero=='1'))
+                    if path=='/api/account-ledger':
+                        supplier=args.get('supplier_id',[''])[0]
+                        db.execute('BEGIN')
+                        return self.send(200,ledger_reports.account_ledger(db,ident(int(args.get('account_id',[''])[0])),args.get('from_date',[None])[0],args.get('to_date',[None])[0],ident(int(supplier)) if supplier else None))
                     if path=='/api/tax-config':return self.send(200,taxation.snapshot(db))
                     if path=='/api/tax-report':
                         end=args.get('to_date',args.get('as_of',[None]))[0]
@@ -253,7 +262,7 @@ class Handler(BaseHTTPRequestHandler):
                         supplier=args.get('supplier_id',[''])[0]
                         return self.send(200,supplier_adjustments.list_refunds(db,ident(int(supplier)) if supplier else None))
                     if len(parts)==3 and parts[:2]==['api','supplier-refunds']:
-                        return self.send(200,supplier_adjustments.get_refund(db,ident(int(parts[2]))))
+                        return self.send(200,supplier_adjustments.get_refund(db,ident(int(parts[2])),args.get('as_of',[None])[0]))
                     if len(parts)==4 and parts[:2]==['api','supplier-payments'] and parts[3] in ('cheque-events','events'):
                         return self.send(200,[{key:value for key,value in row.items() if key!='request_fingerprint'} for row in supplier_adjustments.cheque_events(db,ident(int(parts[2])),args.get('as_of',[None])[0])])
                     if path=='/api/supplier-reconciliation':
@@ -383,6 +392,8 @@ class Handler(BaseHTTPRequestHandler):
                     result=supplier_adjustments.save_refund(db,data,ident(int(parts[2])))
                 elif len(parts)==4 and parts[:2]==['api','supplier-refunds'] and parts[3]=='post' and method=='POST':
                     result=supplier_adjustments.approve_refund(db,ident(int(parts[2])),data)
+                elif len(parts)==4 and parts[:2]==['api','supplier-refunds'] and parts[3]=='reverse' and method=='POST':
+                    result=supplier_adjustments.reverse_refund(db,ident(int(parts[2])),data)
                 elif len(parts)==4 and parts[:2]==['api','supplier-payments'] and parts[3]=='reverse' and method=='POST':
                     pk=ident(int(parts[2]));supplier_adjustments.reverse_payment(db,pk,data);result=supplier_payments.get_payment(db,pk)
                 elif len(parts)==4 and parts[:2]==['api','supplier-payments'] and parts[3]=='cheque-event' and method=='POST':

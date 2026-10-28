@@ -79,11 +79,10 @@ def source_used(db, source_type, source_id, as_of=None):
 def _refund_used(db, source_type, source_id, as_of):
     if not _has(db, 'supplier_refunds'):
         return 0
-    # Refund documents are append-only; a later refund correction is another source
-    # operation and is reflected explicitly by the adjustments module.
-    return db.execute("""SELECT COALESCE(SUM(amount_cents),0) FROM supplier_refunds
-        WHERE source_type=? AND source_id=? AND status='posted' AND business_date<=?""",
-                      (source_type, source_id, as_of)).fetchone()[0]
+    clause, values = payables._refund_effective_filter(db, 'r', as_of)
+    return db.execute("""SELECT COALESCE(SUM(r.amount_cents),0) FROM supplier_refunds r
+        WHERE r.source_type=? AND r.source_id=? AND r.status='posted' AND r.business_date<=?""" + clause,
+                      (source_type, source_id, as_of, *values)).fetchone()[0]
 
 
 def _payment_reversed(db, payment_id, as_of):
@@ -330,6 +329,14 @@ def _assert_reversal_dependencies_unused(db, settlement_id, business_date):
     for invoice_id in targets:
         if _refund_used(db, 'return_credit', invoice_id, ALL_TIME):
             raise ValueError('توجد عملية استرداد مرتبطة برصيد إحدى فواتير التسوية؛ راجع المستند المرتبط أولًا')
+        if _has(db, 'supplier_refund_reversals'):
+            # An eventual refund reversal does not permit invalidating its source
+            # during the historical interval when the receipt was still active.
+            refund_dates = db.execute("""SELECT rr.business_date FROM supplier_refunds r
+                JOIN supplier_refund_reversals rr ON rr.refund_id=r.id
+                WHERE r.source_type='return_credit' AND r.source_id=? AND r.status='posted'""", (invoice_id,)).fetchall()
+            if any(row['business_date'] > business_date for row in refund_dates):
+                raise ValueError('تاريخ عكس التسوية لا يسبق عكس الاسترداد المرتبط؛ اختر تاريخًا بعده')
         rows = db.execute("""SELECT r.business_date reversal_date FROM supplier_settlements s
             LEFT JOIN supplier_settlement_reversals r ON r.settlement_id=s.id
             WHERE s.source_type='return_credit' AND s.source_id=? AND s.status='posted' AND s.id<>?""",
