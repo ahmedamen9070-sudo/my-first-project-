@@ -140,6 +140,23 @@ def create(*a,**kw):
             else:raise AssertionError('Native remittance balances PDF was not created')
             assert output.read_bytes().startswith(b'%PDF')
             result['remittance_pdf_bytes']=output.stat().st_size
+            w.run_js('document.querySelector("#withholding-remittance-window [data-remittance-action=close]").click()')
+            w.run_js('SupplierReview.open("2026-12-31")')
+            for _ in range(100):
+                if evaluate('Boolean(document.querySelector("#supplier-review-window[open] [data-review-tab=overdue]"))'):break
+                time.sleep(.1)
+            else:raise AssertionError('Native supplier review center did not load')
+            result['supplier_review']=evaluate('document.querySelector("#supplier-review-title").innerText')
+            assert 'مركز مراجعة الموردين' in result['supplier_review']
+            ImageGrab.grab().save(str(Path(__file__).with_name('supplier-review-native.png')))
+            output.unlink()
+            w.run_js('document.querySelector("#supplier-review-window [data-review-action=print]").click()')
+            for _ in range(100):
+                if output.exists() and output.stat().st_size>100:break
+                time.sleep(.1)
+            else:raise AssertionError('Native supplier review PDF was not created')
+            assert output.read_bytes().startswith(b'%PDF')
+            result['supplier_review_pdf_bytes']=output.stat().st_size
             result['ok']=True
         except BaseException as e:result['error']=str(e)
         finally:w.destroy()

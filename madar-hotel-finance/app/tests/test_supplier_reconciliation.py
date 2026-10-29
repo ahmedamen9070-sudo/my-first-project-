@@ -147,7 +147,8 @@ class SupplierReconciliation(unittest.TestCase):
         self.assertFalse(report['matched'])
         self.assertEqual(report['totals']['payable_difference_cents'], 0)
         self.assertEqual(report['totals']['unassigned_payable_cents'], 0)
-        self.assertEqual([row['type'] for row in report['exceptions']], ['missing_supplier', 'missing_supplier'])
+        self.assertEqual(sum(row['type'] == 'missing_supplier' for row in report['exceptions']), 2)
+        self.assertEqual(sum(row['type'] == 'untracked_supplier_journal' for row in report['exceptions']), 1)
         self.assertTrue(all(row['journal_id'] for row in report['exceptions']))
         self.assert_matched(self.report('2026-10-20'))
 
@@ -163,8 +164,71 @@ class SupplierReconciliation(unittest.TestCase):
         self.assertFalse(report['matched'])
         self.assertEqual(report['totals']['payable_difference_cents'], 0)
         self.assertEqual(report['counts']['mismatched_suppliers'], 1)
-        self.assertTrue(all(row['type'] == 'source_supplier_mismatch' for row in report['exceptions']))
-        self.assertTrue(all(row['expected_supplier_id'] == 1 for row in report['exceptions']))
+        mismatches = [row for row in report['exceptions'] if row['type'] == 'source_supplier_mismatch']
+        self.assertEqual(len(mismatches), 2)
+        self.assertTrue(all(row['expected_supplier_id'] == 1 for row in mismatches))
+        self.assertTrue(any(row['type'] == 'supplier_source_journal_mismatch' for row in report['exceptions']))
+
+    def test_offsetting_untracked_journals_with_valid_supplier_never_report_matched(self):
+        self.fixture.invoice()
+        first = payables.create_journal(self.db, 'untracked_control_in', 1, '2026-10-20', [
+            {'account_id': self.fixture.ap, 'debit_cents': 1000, 'supplier_id': 1},
+            {'account_id': self.fixture.cash, 'credit_cents': 1000},
+        ])
+        second = payables.create_journal(self.db, 'untracked_control_out', 1, '2026-10-21', [
+            {'account_id': self.fixture.ap, 'credit_cents': 1000, 'supplier_id': 1},
+            {'account_id': self.fixture.cash, 'debit_cents': 1000},
+        ])
+        self.assert_matched(self.report('2026-10-19'))
+        changes = self.db.total_changes
+        report = self.report('2026-10-21')
+        self.assertFalse(report['matched'])
+        self.assertEqual(report['totals']['net_difference_cents'], 0)
+        issues = [row for row in report['exceptions'] if row['type'] == 'untracked_supplier_journal']
+        self.assertEqual({row['journal_id'] for row in issues}, {first, second})
+        self.assertTrue(all(row['account_ids'] == [self.fixture.ap] and row['supplier_ids'] == [1] for row in issues))
+        self.assertFalse(report['suppliers'][0]['matched'])
+        self.assertFalse(next(row for row in report['accounts'] if row['id'] == self.fixture.ap)['matched'])
+        self.assertEqual(self.db.total_changes, changes)
+
+    def test_missing_source_documents_cannot_hide_as_recognized_zero_net_movements(self):
+        source_types = ('supplier_invoice', 'supplier_return', 'supplier_payment',
+                        'supplier_cheque_clearance', 'supplier_settlement', 'supplier_settlement_reversal',
+                        'supplier_refund', 'supplier_refund_reversal', 'supplier_payment_reversal',
+                        'supplier_cheque_bounce')
+        for kind in source_types:
+            payables.create_journal(self.db, kind, 999999, '2026-10-21', [
+                {'account_id': self.fixture.ap, 'debit_cents': 100, 'supplier_id': 1},
+                {'account_id': self.fixture.ap, 'credit_cents': 100, 'supplier_id': 1},
+            ])
+        report = self.report()
+        self.assertFalse(report['matched'])
+        self.assertEqual(report['totals']['payable_difference_cents'], 0)
+        self.assertEqual({row['source_type'] for row in report['exceptions'] if row['type'] == 'missing_supplier_source'}, set(source_types))
+        self.assertFalse(report['suppliers'][0]['matched'])
+
+    def test_existing_document_must_own_the_journal_and_the_event_type(self):
+        payment = self.fixture.post(self.fixture.payload(amount='20', allow_advance=True))
+        # A cash payment exists, but cannot legitimize an invented cheque event.
+        journal = payables.create_journal(self.db, 'supplier_cheque_clearance', payment['id'], '2026-10-21', [
+            {'account_id': self.fixture.ap, 'debit_cents': 100, 'supplier_id': 1},
+            {'account_id': self.fixture.ap, 'credit_cents': 100, 'supplier_id': 1},
+        ])
+        report = self.report()
+        self.assertFalse(report['matched'])
+        issue = next(row for row in report['exceptions'] if row['type'] == 'supplier_source_journal_mismatch')
+        self.assertEqual(issue['journal_id'], journal)
+        self.assertIsNone(issue['expected_journal_id'])
+        self.assertEqual(report['totals']['net_difference_cents'], 0)
+
+    def test_source_reference_review_checks_the_original_document_date(self):
+        invoice = self.fixture.invoice()
+        original = dict(self.db.execute('SELECT id journal_id,code journal_code,source_type,source_id,entry_date FROM journal_entries WHERE id=?', (invoice['journal_id'],)).fetchone())
+        self.assertIsNone(supplier_reconciliation._source_journal_issue(self.db, original))
+        issue = supplier_reconciliation._source_journal_issue(self.db, {**original, 'entry_date': '2026-10-02'})
+        self.assertEqual(issue['type'], 'supplier_source_journal_mismatch')
+        self.assertEqual(issue['expected_entry_date'], '2026-10-01')
+        self.assertEqual(issue['expected_journal_id'], invoice['journal_id'])
 
     def test_unbalanced_sealed_journal_is_an_exception_despite_matching_control_net(self):
         # Simulate an imported/damaged sealed journal independently of the normal

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """A&M Accounting Hotel for Audit &Control development application: single operator, isolated draft purchasing workflow."""
 import argparse, json, os, sqlite3, secrets, mimetypes, shutil, tempfile
-import accounting, payables, supplier_payments, supplier_settlements, supplier_adjustments, taxation, accounting_periods, ledger_reports, withholding, withholding_balances, withholding_remittances
+import accounting, payables, supplier_payments, supplier_settlements, supplier_adjustments, taxation, accounting_periods, ledger_reports, withholding, withholding_balances, withholding_remittances, supplier_review
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -213,6 +213,13 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path.startswith('/api/'):
                 with connect() as db:
+                    if path=='/api/supplier-review':
+                        review_args=parse_qs(parsed.query,keep_blank_values=True)
+                        horizon=review_args.get('horizon_days',['7'])[0]
+                        if not horizon.isascii() or not horizon.isdecimal() or len(horizon)>2 or str(int(horizon))!=horizon:
+                            raise ValueError('أيام المتابعة عدد صحيح من صفر إلى ٩٠')
+                        db.execute('BEGIN')
+                        return self.send(200,supplier_review.snapshot(db,review_args.get('as_of',[None])[0],int(horizon)))
                     if path=='/api/accounting':return self.send(200,accounting.snapshot(db))
                     if path=='/api/trial-balance':
                         include_zero=args.get('include_zero',['0'])[0]

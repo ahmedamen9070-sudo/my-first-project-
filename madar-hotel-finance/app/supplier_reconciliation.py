@@ -76,6 +76,70 @@ def _source_supplier(db, source_type, source_id):
     return row['supplier_id'] if row else None
 
 
+def _source_journal_issue(db, journal):
+    """A control journal must be the posted document's own dated journal.
+
+    Net balances alone cannot identify two untracked movements that cancel one
+    another. The implemented source whitelist is intentionally explicit; adding
+    a future opening/general-journal workflow requires its own reference here.
+    """
+    references = {
+        'supplier_invoice': (('invoices', 'invoice_postings'), '''
+            SELECT p.journal_id,i.business_date entry_date,
+                (p.invoice_id IS NOT NULL AND i.status<>'cancelled') posted
+            FROM invoices i LEFT JOIN invoice_postings p ON p.invoice_id=i.id WHERE i.id=?'''),
+        'supplier_return': (('supplier_returns',), '''
+            SELECT journal_id,business_date entry_date,(status='posted') posted
+            FROM supplier_returns WHERE id=?'''),
+        'supplier_payment': (('supplier_payments',), '''
+            SELECT journal_entry_id journal_id,payment_date entry_date,(status='posted') posted
+            FROM supplier_payments WHERE id=?'''),
+        'supplier_cheque_clearance': (('supplier_payments',), '''
+            SELECT clearance_journal_entry_id journal_id,clearance_date entry_date,
+                (status='posted' AND method='cheque' AND cheque_status='cleared') posted
+            FROM supplier_payments WHERE id=?'''),
+        'supplier_settlement': (('supplier_settlements',), '''
+            SELECT journal_id,business_date entry_date,(status='posted') posted
+            FROM supplier_settlements WHERE id=?'''),
+        # Settlement reversal sources use the settlement ID, rather than an
+        # independently numbered event ID, in the existing posting contract.
+        'supplier_settlement_reversal': (('supplier_settlements', 'supplier_settlement_reversals'), '''
+            SELECT r.journal_id,r.business_date entry_date,(s.status='posted') posted
+            FROM supplier_settlements s JOIN supplier_settlement_reversals r
+                ON r.settlement_id=s.id WHERE s.id=?'''),
+        'supplier_refund': (('supplier_refunds',), '''
+            SELECT journal_id,business_date entry_date,(status='posted') posted
+            FROM supplier_refunds WHERE id=?'''),
+        'supplier_refund_reversal': (('supplier_refunds', 'supplier_refund_reversals'), '''
+            SELECT r.journal_id,r.business_date entry_date,(f.status='posted') posted
+            FROM supplier_refund_reversals r JOIN supplier_refunds f ON f.id=r.refund_id
+            WHERE r.id=?'''),
+        'supplier_payment_reversal': (('supplier_payments', 'supplier_payment_reversals'), '''
+            SELECT r.journal_id,r.business_date entry_date,(p.status='posted') posted
+            FROM supplier_payment_reversals r JOIN supplier_payments p ON p.id=r.payment_id
+            WHERE r.id=?'''),
+        'supplier_cheque_bounce': (('supplier_payments', 'supplier_payment_reversals'), '''
+            SELECT r.clearance_journal_id journal_id,r.business_date entry_date,
+                (p.status='posted' AND p.method='cheque' AND r.event_type='cheque_bounce') posted
+            FROM supplier_payment_reversals r JOIN supplier_payments p ON p.id=r.payment_id
+            WHERE r.id=?'''),
+    }
+    reference = references.get(journal['source_type'])
+    if reference is None:
+        return {'type': 'untracked_supplier_journal',
+                'message': 'قيد على حساب مراقبة الموردين أو المقدمات بلا نوع مستند مصدر مدعوم.'}
+    tables, query = reference
+    row = db.execute(query, (journal['source_id'],)).fetchone() if all(_has_table(db, table) for table in tables) else None
+    if row is None:
+        return {'type': 'missing_supplier_source',
+                'message': 'قيد على حساب مراقبة الموردين أو المقدمات يشير إلى مستند مصدر غير موجود.'}
+    if not row['posted'] or row['journal_id'] != journal['journal_id'] or row['entry_date'] != journal['entry_date']:
+        return {'type': 'supplier_source_journal_mismatch',
+                'message': 'القيد أو تاريخه لا يطابق مرجع المستند المعتمد في دورة الموردين.',
+                'expected_journal_id': row['journal_id'], 'expected_entry_date': row['entry_date']}
+    return None
+
+
 
 def _advance_documents(db, supplier_id, as_of, advance_ids):
     """Remaining document advances grouped by their original posting account."""
@@ -134,6 +198,9 @@ def report(db, as_of=None):
         account_totals[account_id] = {**account, 'kind': 'advance' if account_id in advance_ids else 'payable', 'debit_cents': 0, 'credit_cents': 0, 'balance_cents': 0, 'subledger_balance_cents': 0, 'difference_cents': 0, 'matched': True, 'journal_ids': set()}
     ledger_by_supplier = {}
     control_journal_ids = set()
+    control_journals = {}
+    journal_accounts, journal_suppliers = {}, {}
+    invalid_source_accounts = set()
     lines = []
     if all_ids:
         marks = ','.join('?' for _ in all_ids)
@@ -150,6 +217,10 @@ def report(db, as_of=None):
     for raw in lines:
         line = dict(raw)
         control_journal_ids.add(line['journal_id'])
+        control_journals.setdefault(line['journal_id'], {key: line[key] for key in (
+            'journal_id', 'journal_code', 'source_type', 'source_id', 'entry_date')})
+        journal_accounts.setdefault(line['journal_id'], set()).add(line['account_id'])
+        journal_suppliers.setdefault(line['journal_id'], set()).add(line['supplier_id'])
         is_advance = line['account_id'] in advance_ids
         kind = 'advance' if is_advance else 'payable'
         signed = (line['debit_cents'] - line['credit_cents']) if is_advance else (line['credit_cents'] - line['debit_cents'])
@@ -193,6 +264,17 @@ def report(db, as_of=None):
             FROM journal_entries j JOIN journal_lines l ON l.journal_id=j.id
             WHERE j.id IN({marks}) GROUP BY j.id HAVING SUM(l.debit_cents)<>SUM(l.credit_cents)''', tuple(sorted(control_journal_ids))):
             exceptions.append({'type': 'unbalanced_journal', 'message': 'قيد مرحّل مرتبط بالمطابقة غير متوازن.', **dict(row)})
+    for journal_id, journal in control_journals.items():
+        issue = _source_journal_issue(db, journal)
+        if issue is None:
+            continue
+        invalid_source_accounts.update(journal_accounts[journal_id])
+        for supplier_id in journal_suppliers[journal_id]:
+            if supplier_id in ledger_by_supplier:
+                ledger_by_supplier[supplier_id]['has_exception'] = True
+        exceptions.append({**issue, **journal,
+                           'account_ids': sorted(journal_accounts[journal_id]),
+                           'supplier_ids': sorted((value for value in journal_suppliers[journal_id] if value is not None))})
     suppliers = []
     for supplier_id, supplier in supplier_data.items():
         balance = payables.supplier_balances(db, supplier_id, as_of)
@@ -239,7 +321,7 @@ def report(db, as_of=None):
     for account in account_totals.values():
         account['journal_ids'] = sorted(account['journal_ids'])
         account['difference_cents'] = account['balance_cents'] - account['subledger_balance_cents']
-        account['matched'] = account['difference_cents'] == 0
+        account['matched'] = account['difference_cents'] == 0 and account['id'] not in invalid_source_accounts
     source_rows = db.execute("SELECT id,source_type,source_id FROM journal_entries WHERE sealed=1 AND entry_date<=?", (as_of,)).fetchall()
     supplier_sources = [row for row in source_rows if row['source_type'].startswith('supplier_') or row['id'] in control_journal_ids]
     mismatched = sum(not row['matched'] for row in suppliers)
