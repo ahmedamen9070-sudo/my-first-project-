@@ -174,6 +174,10 @@ def _document(db, source_type, source_id, fallback):
         'supplier_payment': 'supplier_payments', 'supplier_cheque_clearance': 'supplier_payments',
         'supplier_settlement': 'supplier_settlements', 'supplier_refund': 'supplier_refunds',
         'withholding_remittance': 'withholding_remittances',
+        'treasury_receipt': 'treasury_documents', 'treasury_payment': 'treasury_documents',
+        'treasury_transfer': 'treasury_documents',
+        'custody_issue': 'custody_documents', 'custody_settlement': 'custody_documents',
+        'custody_return': 'custody_documents',
     }
     table = tables.get(source_type)
     if table and _has(db, table):
@@ -208,6 +212,17 @@ def _document(db, source_type, source_id, fallback):
         if result:
             return {'document_code': f"WTRR-{result['id']:06d}", 'reference': result['reference'],
                     'original_document_code': result['original_document_code']}
+    for kind, table, original_table, prefix in (
+            ('treasury_reversal', 'treasury_reversals', 'treasury_documents', 'TRV'),
+            ('custody_reversal', 'custody_reversals', 'custody_documents', 'CSR')):
+        if source_type == kind and _has(db, table) and _has(db, original_table):
+            columns = {row['name'] for row in db.execute('PRAGMA table_info(' + table + ')')}
+            saved_code = ',r.code' if 'code' in columns else ''
+            result = db.execute('SELECT r.id,r.reference,d.code original_document_code' + saved_code + ' FROM ' + table +
+                                ' r JOIN ' + original_table + ' d ON d.id=r.document_id WHERE r.id=?', (source_id,)).fetchone()
+            if result:
+                return {'document_code': result['code'] if 'code' in result.keys() else f"{prefix}-{result['id']:06d}", 'reference': result['reference'],
+                        'original_document_code': result['original_document_code']}
     return {'document_code': fallback, 'reference': ''}
 
 

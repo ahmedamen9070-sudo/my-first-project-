@@ -20,6 +20,8 @@ DRAFTS = (
     ('settlement', 'supplier_settlements', 'business_date', 'تسوية'),
     ('refund', 'supplier_refunds', 'business_date', 'استرداد'),
     ('withholding_remittance', 'withholding_remittances', 'business_date', 'توريد خصم ضريبي'),
+    ('treasury', 'treasury_documents', 'business_date', 'مستند خزينة'),
+    ('custody', 'custody_documents', 'business_date', 'مستند عهدة'),
 )
 
 
@@ -177,6 +179,14 @@ def preview(db, month):
             'exception_count': len(tax_review.get('exceptions', [])),
             'mismatched_accounts': sum(not row.get('matched', True) for row in tax_review.get('accounts', [])),
         }
+    custody_reconciliation = None
+    if _has(db, 'custody_documents'):
+        import custodies
+        custody_review = custodies.balance_report(db, end)
+        custody_reconciliation = {
+            'matched': custody_review['matched'], 'totals': custody_review['totals'],
+            'exception_count': len(custody_review.get('exceptions', [])),
+        }
     blockers = []
     if period['status'] == 'closed':
         blockers.append({'code': 'already_closed', 'message': 'الفترة مقفولة بالفعل.', 'count': 1})
@@ -199,10 +209,15 @@ def preview(db, month):
         blockers.append({'code': 'withholding_reconciliation',
                          'message': 'مطابقة الخصم الضريبي والتوريدات مع القيود تحتاج مراجعة.',
                          'count': max(withholding_reconciliation['exception_count'], withholding_reconciliation['mismatched_accounts'], 1)})
+    if custody_reconciliation and not custody_reconciliation['matched']:
+        blockers.append({'code': 'custody_reconciliation',
+                         'message': 'مطابقة العهد التشغيلية مع القيود تحتاج مراجعة.',
+                         'count': max(custody_reconciliation['exception_count'], 1)})
     return {'period': period, 'journal_totals': totals, 'unbalanced_journals': unbalanced, 'unsealed_journals': unsealed,
             'earlier_unbalanced_journals': earlier_unbalanced, 'earlier_unsealed_journals': earlier_unsealed,
             'pending_drafts': pending, 'earlier_pending_drafts': earlier, 'draft_counts': counts, 'reconciliation': reconciliation,
             'withholding_reconciliation': withholding_reconciliation,
+            'custody_reconciliation': custody_reconciliation,
             'events': [_event(db, row['id']) for row in db.execute('SELECT id FROM accounting_period_events WHERE month=? ORDER BY id', (month,))] if _has(db, 'accounting_period_events') else [],
             'blockers': blockers, 'can_close': not blockers,
             'warnings': ['الأرصدة الافتتاحية لم تؤكد في هذه المرحلة؛ القفل مراجعة للحركات المسجلة فقط.',

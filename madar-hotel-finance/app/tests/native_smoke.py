@@ -74,7 +74,7 @@ def create(*a,**kw):
             ImageGrab.grab().save(str(Path(__file__).with_name('settlement-native.png')))
             w.run_js('document.querySelector("[data-ss-action=print-reconciliation]").click()')
             for _ in range(100):
-                if output.exists() and output.stat().st_size>100:break
+                if output.exists() and output.stat().st_size>100 and not getattr(w,'_am_print_state',[[]])[0]:break
                 time.sleep(.1)
             else:raise AssertionError('Native PDF was not created')
             assert output.read_bytes().startswith(b'%PDF')
@@ -97,7 +97,7 @@ def create(*a,**kw):
             output.unlink()
             w.run_js('document.querySelector("#ledger-reports-window [data-ledger-action=print]").click()')
             for _ in range(100):
-                if output.exists() and output.stat().st_size>100:break
+                if output.exists() and output.stat().st_size>100 and not getattr(w,'_am_print_state',[[]])[0]:break
                 time.sleep(.1)
             else:raise AssertionError('Native ledger PDF was not created')
             assert output.read_bytes().startswith(b'%PDF')
@@ -119,7 +119,7 @@ def create(*a,**kw):
             output.unlink()
             w.run_js('document.querySelector("#withholding-setup-window [data-withholding-action=print-report]").click()')
             for _ in range(100):
-                if output.exists() and output.stat().st_size>100:break
+                if output.exists() and output.stat().st_size>100 and not getattr(w,'_am_print_state',[[]])[0]:break
                 time.sleep(.1)
             else:raise AssertionError('Native withholding PDF was not created')
             assert output.read_bytes().startswith(b'%PDF')
@@ -135,7 +135,7 @@ def create(*a,**kw):
             output.unlink()
             w.run_js('document.querySelector("#withholding-remittance-window [data-remittance-action=print-balances]").click()')
             for _ in range(100):
-                if output.exists() and output.stat().st_size>100:break
+                if output.exists() and output.stat().st_size>100 and not getattr(w,'_am_print_state',[[]])[0]:break
                 time.sleep(.1)
             else:raise AssertionError('Native remittance balances PDF was not created')
             assert output.read_bytes().startswith(b'%PDF')
@@ -152,13 +152,50 @@ def create(*a,**kw):
             output.unlink()
             w.run_js('document.querySelector("#supplier-review-window [data-review-action=print]").click()')
             for _ in range(100):
-                if output.exists() and output.stat().st_size>100:break
+                if output.exists() and output.stat().st_size>100 and not getattr(w,'_am_print_state',[[]])[0]:break
                 time.sleep(.1)
             else:raise AssertionError('Native supplier review PDF was not created')
             assert output.read_bytes().startswith(b'%PDF')
             result['supplier_review_pdf_bytes']=output.stat().st_size
+            w.run_js('document.querySelector("#supplier-review-window [data-review-action=close]").click()')
+            w.run_js('Treasury.open()')
+            for _ in range(100):
+                if evaluate('Boolean(document.querySelector("#treasury-window[open] [data-treasury-action=new-receipt]"))'):break
+                time.sleep(.1)
+            else:raise AssertionError('Native treasury workspace did not load')
+            result['treasury']=evaluate('document.querySelector("#treasury-title").innerText')
+            ImageGrab.grab().save(str(Path(__file__).with_name('treasury-native.png')))
+            w.run_js('Treasury.cashBook(null,{from_date:"2026-01-01",to_date:"2026-12-31"})')
+            for _ in range(100):
+                if evaluate('Boolean(document.querySelector("#treasury-window[open] [data-treasury-action=print-report]"))'):break
+                time.sleep(.1)
+            else:raise AssertionError('Native cash book did not load')
+            output.unlink()
+            w.run_js('document.querySelector("#treasury-window [data-treasury-action=print-report]").click()')
+            for _ in range(100):
+                if output.exists() and output.stat().st_size>100 and not getattr(w,'_am_print_state',[[]])[0]:break
+                time.sleep(.1)
+            else:raise AssertionError('Native cash book PDF was not created')
+            assert output.read_bytes().startswith(b'%PDF')
+            result['cash_book_pdf_bytes']=output.stat().st_size
+            w.run_js('Treasury.balances("2026-12-31")')
+            for _ in range(100):
+                if evaluate('document.querySelector("#treasury-title").innerText.includes("مطابقة العُهد")'):break
+                time.sleep(.1)
+            else:raise AssertionError('Native custody balance report did not load')
+            output.unlink()
+            w.run_js('document.querySelector("#treasury-window [data-treasury-action=print-report]").click()')
+            for _ in range(100):
+                if output.exists() and output.stat().st_size>100 and not getattr(w,'_am_print_state',[[]])[0]:break
+                time.sleep(.1)
+            else:raise AssertionError('Native custody balances PDF was not created')
+            assert output.read_bytes().startswith(b'%PDF')
+            result['custody_pdf_bytes']=output.stat().st_size
             result['ok']=True
-        except BaseException as e:result['error']=str(e)
+        except BaseException as e:
+            result['error']=str(e)
+            try:result['treasury_error']=evaluate('document.querySelector("#treasury-error")?.innerText||""')
+            except BaseException:pass
         finally:w.destroy()
     w.events.loaded+=loaded
     return w

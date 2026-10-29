@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """A&M Accounting Hotel for Audit &Control development application: single operator, isolated draft purchasing workflow."""
 import argparse, json, os, sqlite3, secrets, mimetypes, shutil, tempfile
-import accounting, payables, supplier_payments, supplier_settlements, supplier_adjustments, taxation, accounting_periods, ledger_reports, withholding, withholding_balances, withholding_remittances, supplier_review
+import accounting, payables, supplier_payments, supplier_settlements, supplier_adjustments, taxation, accounting_periods, ledger_reports, withholding, withholding_balances, withholding_remittances, supplier_review, treasury, custodies, treasury_reports
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -45,6 +45,8 @@ def init():
         taxation.initialize(db)
         accounting_periods.initialize(db)
         withholding_remittances.initialize(db)
+        treasury.initialize(db)
+        custodies.initialize(db)
 
 def now(): return datetime.now(timezone.utc).isoformat(timespec='seconds')
 def code(db,kind,prefix):
@@ -213,6 +215,28 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path.startswith('/api/'):
                 with connect() as db:
+                    if path in ('/api/treasury-config','/api/custody-config','/api/custodians'):
+                        db.execute('BEGIN')
+                        result=treasury.config(db) if path=='/api/treasury-config' else custodies.config(db)
+                        return self.send(200,result['custodians'] if path=='/api/custodians' else result)
+                    if path in ('/api/treasury-documents','/api/custody-documents'):
+                        db.execute('BEGIN')
+                        module=treasury if path=='/api/treasury-documents' else custodies
+                        return self.send(200,module.list_documents(db,args.get('as_of',[None])[0]))
+                    if len(parts)==3 and parts[:2] in (['api','treasury-documents'],['api','custody-documents']):
+                        db.execute('BEGIN')
+                        module=treasury if parts[1]=='treasury-documents' else custodies
+                        return self.send(200,module.detail(db,ident(int(parts[2])),args.get('as_of',[None])[0]))
+                    if path=='/api/custody-balances':
+                        db.execute('BEGIN')
+                        return self.send(200,custodies.balance_report(db,args.get('as_of',[None])[0]))
+                    if path=='/api/treasury-position':
+                        db.execute('BEGIN')
+                        return self.send(200,treasury_reports.position(db,args.get('as_of',[None])[0]))
+                    if path=='/api/cash-book':
+                        db.execute('BEGIN')
+                        account=args.get('account_id',[''])[0]
+                        return self.send(200,treasury_reports.cash_book(db,ident(int(account)) if account else None,args.get('from_date',[None])[0],args.get('to_date',[None])[0]))
                     if path=='/api/supplier-review':
                         review_args=parse_qs(parsed.query,keep_blank_values=True)
                         horizon=review_args.get('horizon_days',['7'])[0]
@@ -322,7 +346,20 @@ class Handler(BaseHTTPRequestHandler):
             path=urlparse(self.path).path;parts=path.strip('/').split('/')
             with connect() as db:
                 db.execute('BEGIN IMMEDIATE')
-                if path=='/api/tax-settings' and method=='PUT':
+                if path in ('/api/treasury-preview','/api/custody-preview') and method=='POST':
+                    result=(treasury if path=='/api/treasury-preview' else custodies).preview(db,data)
+                elif path in ('/api/treasury-documents','/api/custody-documents') and method=='POST':
+                    result=(treasury if path=='/api/treasury-documents' else custodies).save(db,data)
+                elif len(parts)==3 and parts[:2] in (['api','treasury-documents'],['api','custody-documents']) and method=='PUT':
+                    result=(treasury if parts[1]=='treasury-documents' else custodies).save(db,data,ident(int(parts[2])))
+                elif len(parts)==4 and parts[:2] in (['api','treasury-documents'],['api','custody-documents']) and parts[3] in ('post','reverse') and method=='POST':
+                    module=treasury if parts[1]=='treasury-documents' else custodies
+                    result=(module.approve if parts[3]=='post' else module.reverse)(db,ident(int(parts[2])),data)
+                elif path=='/api/custodians' and method=='POST':
+                    result=custodies.save_custodian(db,data)
+                elif len(parts)==3 and parts[:2]==['api','custodians'] and method=='PUT':
+                    result=custodies.save_custodian(db,data,ident(int(parts[2])))
+                elif path=='/api/tax-settings' and method=='PUT':
                     result=taxation.update_settings(db,data)
                 elif path=='/api/withholding-codes' and method=='POST':
                     result=withholding.create_code(db,data)
