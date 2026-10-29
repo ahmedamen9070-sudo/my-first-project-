@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """A&M Accounting Hotel for Audit &Control development application: single operator, isolated draft purchasing workflow."""
 import argparse, json, os, sqlite3, secrets, mimetypes, shutil, tempfile
-import accounting, payables, supplier_payments, supplier_settlements, supplier_adjustments, taxation, accounting_periods, ledger_reports, withholding, withholding_balances, withholding_remittances, supplier_review, treasury, custodies, treasury_reports
+import accounting, payables, supplier_payments, supplier_settlements, supplier_adjustments, taxation, accounting_periods, ledger_reports, withholding, withholding_balances, withholding_remittances, supplier_review, treasury, custodies, treasury_reports, cash_counts
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -47,6 +47,7 @@ def init():
         withholding_remittances.initialize(db)
         treasury.initialize(db)
         custodies.initialize(db)
+        cash_counts.initialize(db)
 
 def now(): return datetime.now(timezone.utc).isoformat(timespec='seconds')
 def code(db,kind,prefix):
@@ -215,6 +216,15 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path.startswith('/api/'):
                 with connect() as db:
+                    if path=='/api/cash-count-config':
+                        db.execute('BEGIN')
+                        return self.send(200,cash_counts.config(db))
+                    if path=='/api/cash-counts':
+                        db.execute('BEGIN')
+                        return self.send(200,cash_counts.list_counts(db))
+                    if len(parts)==3 and parts[:2]==['api','cash-counts']:
+                        db.execute('BEGIN')
+                        return self.send(200,cash_counts.detail(db,ident(int(parts[2]))))
                     if path in ('/api/treasury-config','/api/custody-config','/api/custodians'):
                         db.execute('BEGIN')
                         result=treasury.config(db) if path=='/api/treasury-config' else custodies.config(db)
@@ -346,7 +356,15 @@ class Handler(BaseHTTPRequestHandler):
             path=urlparse(self.path).path;parts=path.strip('/').split('/')
             with connect() as db:
                 db.execute('BEGIN IMMEDIATE')
-                if path in ('/api/treasury-preview','/api/custody-preview') and method=='POST':
+                if path=='/api/cash-count-preview' and method=='POST':
+                    result=cash_counts.preview(db,data)
+                elif path=='/api/cash-counts' and method=='POST':
+                    result=cash_counts.save(db,data)
+                elif len(parts)==3 and parts[:2]==['api','cash-counts'] and method=='PUT':
+                    result=cash_counts.save(db,data,ident(int(parts[2])))
+                elif len(parts)==4 and parts[:2]==['api','cash-counts'] and parts[3] in ('confirm','void') and method=='POST':
+                    result=(cash_counts.confirm if parts[3]=='confirm' else cash_counts.void)(db,ident(int(parts[2])),data)
+                elif path in ('/api/treasury-preview','/api/custody-preview') and method=='POST':
                     result=(treasury if path=='/api/treasury-preview' else custodies).preview(db,data)
                 elif path in ('/api/treasury-documents','/api/custody-documents') and method=='POST':
                     result=(treasury if path=='/api/treasury-documents' else custodies).save(db,data)

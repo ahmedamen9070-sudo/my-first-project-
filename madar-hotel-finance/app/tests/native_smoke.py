@@ -191,6 +191,27 @@ def create(*a,**kw):
             else:raise AssertionError('Native custody balances PDF was not created')
             assert output.read_bytes().startswith(b'%PDF')
             result['custody_pdf_bytes']=output.stat().st_size
+            w.run_js('document.querySelector("#treasury-window [data-treasury-action=close]").click()')
+            w.run_js('CashCounts.open()')
+            for _ in range(100):
+                if evaluate('Boolean(document.querySelector("#cash-count-window[open] [data-cash-count-action=new]"))'):break
+                time.sleep(.1)
+            else:raise AssertionError('Native cash count list did not load')
+            w.run_js('api("cash-counts","POST",{request_key:crypto.randomUUID(),business_date:"2026-10-30",reference:crypto.randomUUID(),cash_account_id:accountingData.accounts.find(a=>a.code==="111002").id,counted_by:"قائم بالجرد في اختبار معزول",reviewed_by:"مراجع الجرد في الاختبار",notes:"محضر اختبار غير مالي",lines:[{denomination_cents:20000,quantity:0}]}).then(d=>api("cash-counts/"+d.id+"/confirm","POST",{revision:d.revision})).then(d=>CashCounts.openDocument(d.id)).catch(e=>{window.__nativeCountError=e.message})')
+            for _ in range(100):
+                if evaluate('Boolean(document.querySelector("#cash-count-window[open] [data-cash-count-action=print]"))'):break
+                time.sleep(.1)
+            else:raise AssertionError('Native saved cash count did not load: '+str(evaluate('window.__nativeCountError||""')))
+            result['cash_count']=evaluate('document.querySelector("#cash-count-title").innerText')
+            ImageGrab.grab().save(str(Path(__file__).with_name('cash-count-native.png')))
+            output.unlink()
+            w.run_js('document.querySelector("#cash-count-window [data-cash-count-action=print]").click()')
+            for _ in range(100):
+                if output.exists() and output.stat().st_size>100 and not getattr(w,'_am_print_state',[[]])[0]:break
+                time.sleep(.1)
+            else:raise AssertionError('Native cash count PDF was not created')
+            assert output.read_bytes().startswith(b'%PDF')
+            result['cash_count_pdf_bytes']=output.stat().st_size
             result['ok']=True
         except BaseException as e:
             result['error']=str(e)

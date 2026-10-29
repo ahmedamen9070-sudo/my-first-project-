@@ -22,6 +22,7 @@ DRAFTS = (
     ('withholding_remittance', 'withholding_remittances', 'business_date', 'توريد خصم ضريبي'),
     ('treasury', 'treasury_documents', 'business_date', 'مستند خزينة'),
     ('custody', 'custody_documents', 'business_date', 'مستند عهدة'),
+    ('cash_count', 'cash_counts', 'business_date', 'محضر جرد'),
 )
 
 
@@ -213,15 +214,28 @@ def preview(db, month):
         blockers.append({'code': 'custody_reconciliation',
                          'message': 'مطابقة العهد التشغيلية مع القيود تحتاج مراجعة.',
                          'count': max(custody_reconciliation['exception_count'], 1)})
+    count_review = None
+    count_warnings = []
+    if _has(db, 'cash_counts'):
+        void_filter = (' AND NOT EXISTS(SELECT 1 FROM cash_count_voids v WHERE v.count_id=c.id AND v.business_date<=?)'
+                       if _has(db, 'cash_count_voids') else '')
+        values = [start, end, *([end] if void_filter else [])]
+        count_review = dict(db.execute('''SELECT COUNT(*) confirmed_count,
+            COALESCE(SUM(CASE WHEN variance_cents<>0 THEN 1 ELSE 0 END),0) variance_count
+            FROM cash_counts c WHERE status='confirmed' AND business_date>=? AND business_date<=?''' + void_filter, values).fetchone())
+        if count_review['variance_count']:
+            count_warnings.append('توجد محاضر جرد معتمدة بها فروق عدّ تحتاج مراجعة: ' + str(count_review['variance_count']) +
+                                  '. المحضر لا ينشئ تسوية مالية؛ راجع أرصدة البداية والمستندات قبل أي تسوية مستقلة.')
     return {'period': period, 'journal_totals': totals, 'unbalanced_journals': unbalanced, 'unsealed_journals': unsealed,
             'earlier_unbalanced_journals': earlier_unbalanced, 'earlier_unsealed_journals': earlier_unsealed,
             'pending_drafts': pending, 'earlier_pending_drafts': earlier, 'draft_counts': counts, 'reconciliation': reconciliation,
             'withholding_reconciliation': withholding_reconciliation,
             'custody_reconciliation': custody_reconciliation,
+            'cash_count_review': count_review,
             'events': [_event(db, row['id']) for row in db.execute('SELECT id FROM accounting_period_events WHERE month=? ORDER BY id', (month,))] if _has(db, 'accounting_period_events') else [],
             'blockers': blockers, 'can_close': not blockers,
             'warnings': ['الأرصدة الافتتاحية لم تؤكد في هذه المرحلة؛ القفل مراجعة للحركات المسجلة فقط.',
-                         'القفل الشهري لا ينشئ قيود إقفال أرباح وخسائر ولا يمثل إقرارًا ضريبيًا.']}
+                         'القفل الشهري لا ينشئ قيود إقفال أرباح وخسائر ولا يمثل إقرارًا ضريبيًا.'] + count_warnings}
 
 
 def _payload(month, action, data):
