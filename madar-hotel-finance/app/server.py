@@ -3,6 +3,7 @@
 import argparse, json, os, sqlite3, secrets, mimetypes, shutil, tempfile
 import accounting, payables, supplier_payments, supplier_settlements, supplier_adjustments, taxation, accounting_periods, ledger_reports, withholding, withholding_balances, withholding_remittances, supplier_review, treasury, custodies, treasury_reports, cash_counts
 import opening_balances, banks
+import bank_reconciliation, bank_statement_import
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -51,6 +52,7 @@ def init():
         cash_counts.initialize(db)
         banks.initialize(db)
         opening_balances.initialize(db)
+        bank_reconciliation.initialize(db)
 
 def now(): return datetime.now(timezone.utc).isoformat(timespec='seconds')
 def code(db,kind,prefix):
@@ -219,6 +221,13 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path.startswith('/api/'):
                 with connect() as db:
+                    if path in ('/api/bank-reconciliation-config','/api/bank-reconciliations'):
+                        db.execute('BEGIN')
+                        account=args.get('account_id',[''])[0]
+                        return self.send(200,bank_reconciliation.config(db) if path.endswith('-config') else bank_reconciliation.list_reconciliations(db,ident(int(account)) if account else None,args.get('as_of',[None])[0]))
+                    if len(parts)==3 and parts[:2]==['api','bank-reconciliations']:
+                        db.execute('BEGIN')
+                        return self.send(200,bank_reconciliation.detail(db,ident(int(parts[2])),args.get('as_of',[None])[0]))
                     if path in ('/api/opening-config','/api/opening-balances','/api/bank-config','/api/bank-accounts','/api/bank-documents','/api/opening-bank-cheques'):
                         db.execute('BEGIN')
                         if path=='/api/opening-config': result=opening_balances.config(db)
@@ -371,14 +380,25 @@ class Handler(BaseHTTPRequestHandler):
     def mutate(self,method):
         if self.headers.get('X-Madar-CSRF')!=TOKEN: return self.send(403,{'error':'أعد تحميل الصفحة لتجديد جلسة العمل'})
         try:
+            path=urlparse(self.path).path;parts=path.strip('/').split('/')
             size=int(self.headers.get('Content-Length','0'))
-            if not 0<size<=250000: raise ValueError('حجم الطلب غير صالح')
+            limit=4*1024*1024 if path.startswith('/api/bank-reconciliation') or path in ('/api/bank-statement-inspect','/api/bank-statement-import') else 250000
+            if not 0<size<=limit: raise ValueError('حجم الطلب غير صالح')
             data=json.loads(self.rfile.read(size))
             if not isinstance(data,dict): raise ValueError('صيغة الطلب غير صالحة')
-            path=urlparse(self.path).path;parts=path.strip('/').split('/')
             with connect() as db:
                 db.execute('BEGIN IMMEDIATE')
-                if path=='/api/opening-preview' and method=='POST':
+                if path in ('/api/bank-statement-inspect','/api/bank-statement-import') and method=='POST':
+                    result=(bank_statement_import.inspect if path.endswith('inspect') else bank_statement_import.parse)(data)
+                elif path=='/api/bank-reconciliation-preview' and method=='POST':
+                    result=bank_reconciliation.preview(db,data)
+                elif path=='/api/bank-reconciliations' and method=='POST':
+                    result=bank_reconciliation.save(db,data)
+                elif len(parts)==3 and parts[:2]==['api','bank-reconciliations'] and method=='PUT':
+                    result=bank_reconciliation.save(db,data,ident(int(parts[2])))
+                elif len(parts)==4 and parts[:2]==['api','bank-reconciliations'] and parts[3] in ('confirm','void') and method=='POST':
+                    result=(bank_reconciliation.confirm if parts[3]=='confirm' else bank_reconciliation.void)(db,ident(int(parts[2])),data)
+                elif path=='/api/opening-preview' and method=='POST':
                     result=opening_balances.preview(db,data)
                 elif path=='/api/opening-balances' and method=='POST':
                     result=opening_balances.save(db,data)

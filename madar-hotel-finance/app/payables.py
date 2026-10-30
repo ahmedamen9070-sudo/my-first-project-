@@ -212,6 +212,10 @@ def create_journal(db, source_type, source_id, entry_date, lines):
             raise accounting.ConflictError('مصدر القيد مرحل بالفعل ببيانات مختلفة')
         return old['id']
     accounting_periods.assert_open(db,entry_date)
+    import bank_reconciliation
+    bank_reconciliation.assert_journal_open(db, entry_date, [
+        dict(zip(('account_id','debit_cents','credit_cents','supplier_id','department_id','source_line_id'), row))
+        for row in prepared])
     code = _code(db, 'journal', 'JE')
     journal_id = db.execute('INSERT INTO journal_entries(code,source_type,source_id,entry_date,created_at,request_fingerprint) VALUES(?,?,?,?,?,?)',
                             (code, source_type, source_id, entry_date, _now(), fingerprint)).lastrowid

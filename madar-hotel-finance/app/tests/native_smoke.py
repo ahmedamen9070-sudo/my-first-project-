@@ -244,6 +244,21 @@ def create(*a,**kw):
             else:raise AssertionError('Native bank book PDF was not created')
             assert output.read_bytes().startswith(b'%PDF')
             result['bank_pdf_bytes']=output.stat().st_size
+            w.run_js('document.querySelector("#bank-window [data-bank-action=close]").click()')
+            w.run_js('(async()=>{const data={request_key:crypto.randomUUID(),account_id:accountingData.accounts.find(a=>a.code==="112001").id,from_date:"2026-01-01",to_date:"2026-01-31",reference:"NATIVE-STATEMENT-TEST",opening_balance:"200",closing_balance:"200",prepared_by:"محاسب البنك للاختبار",reviewed_by:"المراجع للاختبار",lines:[],matches:[]};let d=await api("bank-reconciliations","POST",data);d=await api("bank-reconciliations/"+d.id+"/confirm","POST",{revision:d.revision});await BankReconciliation.openDocument(d.id);})().catch(e=>{window.__nativeReconError=e.message})')
+            for _ in range(100):
+                if evaluate('Boolean(document.querySelector("#bank-reconciliation-window[open] [data-reconciliation-action=print]"))'):break
+                time.sleep(.1)
+            else:raise AssertionError('Native bank reconciliation did not load: '+str(evaluate('window.__nativeReconError||""')))
+            result['bank_reconciliation']=evaluate('document.querySelector("#bank-reconciliation-title").innerText')
+            output.unlink()
+            w.run_js('document.querySelector("#bank-reconciliation-window [data-reconciliation-action=print]").click()')
+            for _ in range(100):
+                if output.exists() and output.stat().st_size>100 and not getattr(w,'_am_print_state',[[]])[0]:break
+                time.sleep(.1)
+            else:raise AssertionError('Native bank reconciliation PDF was not created')
+            assert output.read_bytes().startswith(b'%PDF')
+            result['bank_reconciliation_pdf_bytes']=output.stat().st_size
             result['ok']=True
         except BaseException as e:
             result['error']=str(e)

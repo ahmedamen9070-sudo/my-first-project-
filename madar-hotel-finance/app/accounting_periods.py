@@ -25,6 +25,7 @@ DRAFTS = (
     ('cash_count', 'cash_counts', 'business_date', 'محضر جرد'),
     ('bank', 'bank_documents', 'business_date', 'مستند بنك'),
     ('opening_balance', 'opening_batches', 'business_date', 'كشف أرصدة افتتاحية'),
+    ('bank_reconciliation', 'bank_reconciliations', 'business_date', 'تسوية بنكية'),
 )
 
 
@@ -220,6 +221,14 @@ def preview(db, month):
         blockers.append({'code': 'custody_reconciliation',
                          'message': 'مطابقة العهد التشغيلية مع القيود تحتاج مراجعة.',
                          'count': max(custody_reconciliation['exception_count'], 1)})
+    bank_reconciliation_review = None
+    if _has(db, 'bank_reconciliations'):
+        import bank_reconciliation
+        bank_reconciliation_review = bank_reconciliation.review(db, end)
+        if not bank_reconciliation_review['matched']:
+            blockers.append({'code': 'bank_reconciliation_integrity',
+                             'message': 'محاضر التسوية البنكية المعتمدة لا تطابق قيودها أو تفاصيلها المحفوظة؛ راجعها قبل القفل.',
+                             'count': len(bank_reconciliation_review['exceptions'])})
     count_review = None
     count_warnings = []
     if _has(db, 'cash_counts'):
@@ -238,6 +247,7 @@ def preview(db, month):
             'withholding_reconciliation': withholding_reconciliation,
             'custody_reconciliation': custody_reconciliation,
             'cash_count_review': count_review,
+            'bank_reconciliation_review': bank_reconciliation_review,
             'events': [_event(db, row['id']) for row in db.execute('SELECT id FROM accounting_period_events WHERE month=? ORDER BY id', (month,))] if _has(db, 'accounting_period_events') else [],
             'blockers': blockers, 'can_close': not blockers,
             'opening_status': accounting.opening_status(db, end),
