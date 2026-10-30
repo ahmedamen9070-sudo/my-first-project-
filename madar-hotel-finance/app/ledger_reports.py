@@ -163,12 +163,19 @@ def trial_balance(db, from_date=None, to_date=None, include_zero=False):
             'groups': [row for row in sorted(groups.values(), key=lambda item: item['code']) if include_zero or _used(row)],
             'totals': totals, 'balanced': not exceptions and totals['opening_difference_cents'] == totals['movement_difference_cents'] == totals['closing_difference_cents'] == 0,
             'exceptions': exceptions, 'account_count': len(rows),
+            'opening_status': accounting.opening_status(db, to_date),
             'notes': ['الأرصدة من القيود المرحّلة فقط؛ رصيد أول المدة هو صافي القيود السابقة لتاريخ البداية.',
                       'إجماليات التقرير للحسابات التفصيلية مباشرة؛ التجميعات معروضة منفصلة ولا تضاف مرة أخرى.',
                       'الرصيد الموجب مدين والسالب دائن، بغض النظر عن الطبيعة المعتادة للحساب.']}
 
 
 def _document(db, source_type, source_id, fallback):
+    if source_type == 'opening_balance' and _has(db, 'opening_lines'):
+        row = db.execute('''SELECT b.id batch_id,b.code,l.reference FROM opening_lines l
+            JOIN opening_batches b ON b.id=l.batch_id WHERE l.id=?''', (source_id,)).fetchone()
+        if row:
+            return {'document_code': row['code'], 'reference': row['reference'],
+                    'opening_batch_id': row['batch_id']}
     tables = {
         'supplier_invoice': 'invoices', 'supplier_return': 'supplier_returns',
         'supplier_payment': 'supplier_payments', 'supplier_cheque_clearance': 'supplier_payments',
@@ -176,6 +183,9 @@ def _document(db, source_type, source_id, fallback):
         'withholding_remittance': 'withholding_remittances',
         'treasury_receipt': 'treasury_documents', 'treasury_payment': 'treasury_documents',
         'treasury_transfer': 'treasury_documents',
+        'bank_receipt': 'bank_documents', 'bank_payment': 'bank_documents',
+        'bank_fee': 'bank_documents', 'bank_transfer': 'bank_documents',
+        'opening_cheque_clearance': 'bank_cheque_clearances',
         'custody_issue': 'custody_documents', 'custody_settlement': 'custody_documents',
         'custody_return': 'custody_documents',
     }
@@ -214,6 +224,7 @@ def _document(db, source_type, source_id, fallback):
                     'original_document_code': result['original_document_code']}
     for kind, table, original_table, prefix in (
             ('treasury_reversal', 'treasury_reversals', 'treasury_documents', 'TRV'),
+            ('bank_reversal', 'bank_reversals', 'bank_documents', 'BRV'),
             ('custody_reversal', 'custody_reversals', 'custody_documents', 'CSR')):
         if source_type == kind and _has(db, table) and _has(db, original_table):
             columns = {row['name'] for row in db.execute('PRAGMA table_info(' + table + ')')}
@@ -279,5 +290,6 @@ def account_ledger(db, account_id, from_date=None, to_date=None, supplier_id=Non
     return {'account': _account(found), 'supplier': supplier, 'from_date': from_date, 'to_date': to_date,
             'currency': accounting.get_settings(db)['base_currency'], 'rows': rows, 'totals': totals, **totals,
             'exceptions': exceptions, 'complete': not exceptions,
+            'opening_status': accounting.opening_status(db, to_date),
             'notes': ['الأستاذ يعرض الحساب التفصيلي المختار فقط من القيود المرحّلة.',
                       'الرصيد الموجب مدين والسالب دائن؛ التصفية بالمورد تشمل أطراف القيد المسندة إليه فقط.']}

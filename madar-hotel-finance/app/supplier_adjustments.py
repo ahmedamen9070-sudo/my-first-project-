@@ -11,6 +11,7 @@ import json
 import accounting
 import accounting_periods
 import payables
+import opening_suppliers
 
 
 def _has(db, table):
@@ -53,6 +54,8 @@ def initialize(db):
         'CREATE INDEX IF NOT EXISTS supplier_cheque_history ON supplier_cheque_events(payment_id,business_date,id)',
     ]:
         db.execute(sql)
+    if 'source_origin' not in {r['name'] for r in db.execute('PRAGMA table_info(supplier_refunds)')}:
+        db.execute("ALTER TABLE supplier_refunds ADD COLUMN source_origin TEXT NOT NULL DEFAULT 'operating' CHECK(source_origin IN('operating','opening'))")
     if 'reference' not in {r['name'] for r in db.execute('PRAGMA table_info(supplier_payment_reversals)')}:
         db.execute("ALTER TABLE supplier_payment_reversals ADD COLUMN reference TEXT NOT NULL DEFAULT ''")
     for table, condition in [('supplier_refunds', "OLD.status='posted'"), ('supplier_payment_reversals', '1'), ('supplier_refund_reversals', '1'), ('supplier_cheque_events', '1')]:
@@ -60,13 +63,14 @@ def initialize(db):
             db.execute(f'''CREATE TRIGGER IF NOT EXISTS adjustment_immutable_{table}_{operation.lower()} BEFORE {operation} ON {table} WHEN {condition} BEGIN SELECT RAISE(ABORT,'approved supplier adjustment is immutable'); END''')
 
 
-def refund_consumption(db, source_type, source_id, as_of=None):
+def refund_consumption(db, source_type, source_id, as_of=None, source_origin='operating'):
     if not _has(db, 'supplier_refunds'):
         return 0
     as_of = payables._as_of(as_of)
     clause = ' AND NOT EXISTS(SELECT 1 FROM supplier_refund_reversals rr WHERE rr.refund_id=r.id AND rr.business_date<=?)' if _has(db, 'supplier_refund_reversals') else ''
-    values = (source_type, source_id, as_of, as_of) if clause else (source_type, source_id, as_of)
-    return db.execute("SELECT COALESCE(SUM(r.amount_cents),0) FROM supplier_refunds r WHERE r.source_type=? AND r.source_id=? AND r.status='posted' AND r.business_date<=?" + clause, values).fetchone()[0]
+    origin_sql, origin_args = opening_suppliers.origin_clause(db, 'supplier_refunds', 'r', source_origin)
+    values = (source_type, source_id, *origin_args, as_of, as_of) if clause else (source_type, source_id, *origin_args, as_of)
+    return db.execute("SELECT COALESCE(SUM(r.amount_cents),0) FROM supplier_refunds r WHERE r.source_type=? AND r.source_id=?" + origin_sql + " AND r.status='posted' AND r.business_date<=?" + clause, values).fetchone()[0]
 
 
 def payment_reversed(db, payment_id, as_of=None):
@@ -75,12 +79,13 @@ def payment_reversed(db, payment_id, as_of=None):
     return db.execute('SELECT 1 FROM supplier_payment_reversals WHERE payment_id=? AND business_date<=?', (payment_id, payables._as_of(as_of))).fetchone() is not None
 
 
-def _active_settlement_usage(db, source_type, source_id, as_of):
+def _active_settlement_usage(db, source_type, source_id, as_of, source_origin='operating'):
     if not _has(db, 'supplier_settlements'):
         return 0
     reverse_clause = ' AND NOT EXISTS(SELECT 1 FROM supplier_settlement_reversals r WHERE r.settlement_id=s.id AND r.business_date<=?)' if _has(db, 'supplier_settlement_reversals') else ''
-    params = (source_type, source_id, as_of, as_of) if reverse_clause else (source_type, source_id, as_of)
-    return db.execute("SELECT COALESCE(SUM(s.amount_cents),0) FROM supplier_settlements s WHERE s.source_type=? AND s.source_id=? AND s.status='posted' AND s.business_date<=?" + reverse_clause, params).fetchone()[0]
+    origin_sql, origin_args = opening_suppliers.origin_clause(db, 'supplier_settlements', 's', source_origin)
+    params = (source_type, source_id, *origin_args, as_of, as_of) if reverse_clause else (source_type, source_id, *origin_args, as_of)
+    return db.execute("SELECT COALESCE(SUM(s.amount_cents),0) FROM supplier_settlements s WHERE s.source_type=? AND s.source_id=?" + origin_sql + " AND s.status='posted' AND s.business_date<=?" + reverse_clause, params).fetchone()[0]
 
 
 def _advance_account(db, payment):
@@ -91,8 +96,18 @@ def _advance_account(db, payment):
     return lines[0]['account_id']
 
 
-def _source(db, supplier_id, source_type, source_id, as_of):
+def _source(db, supplier_id, source_type, source_id, as_of, source_origin='operating'):
     source_id = payables._id(source_id)
+    if source_origin == 'opening':
+        if source_type != 'advance':
+            raise ValueError('نوع مصدر الرصيد الافتتاحي غير صحيح')
+        opening = opening_suppliers.advance(db, source_id, supplier_id)
+        used = _active_settlement_usage(db, source_type, source_id, as_of, source_origin='opening')
+        refunded = refund_consumption(db, source_type, source_id, as_of, source_origin='opening')
+        available = max(opening['amount_cents'] - used - refunded, 0) if opening['business_date'] <= as_of else 0
+        return {'source_type': source_type, 'source_origin': 'opening', 'source_id': source_id,
+                'source_code': opening['code'], 'source_date': opening['business_date'],
+                'account_id': opening['account_id'], 'available_cents': available}
     if source_type == 'advance':
         payment = _require(db, 'supplier_payments', source_id)
         if payment['supplier_id'] != supplier_id or payment['status'] != 'posted' or not payment['advance_cents']:
@@ -137,16 +152,18 @@ def _refund_payload(db, data):
              'business_date': _date(data.get('business_date')), 'reference': _text(data, 'reference', 100, True),
              'reason': _text(data, 'reason', 2000, True), 'notes': _text(data, 'notes', 2000), 'method': method,
              'funding_account_id': funding['id'], 'details': _refund_details(method, data.get('details', {})), 'amount_cents': _amount(data)}
+    if opening_suppliers.origin(data) == 'opening':
+        value['source_origin'] = 'opening'
     return value
 
 
 def _refund_preview(db, value):
-    dated = _source(db, value['supplier_id'], value['source_type'], value['source_id'], value['business_date'])
+    dated = _source(db, value['supplier_id'], value['source_type'], value['source_id'], value['business_date'], value.get('source_origin', 'operating'))
     # A future consumption followed by reversal can have the same endpoints.
     # Check every approved accounting boundary, not only today and all-time.
     boundaries = {value['business_date'], '9999-12-31'}
     boundaries.update(r[0] for r in db.execute("SELECT DISTINCT entry_date FROM journal_entries WHERE sealed=1 AND entry_date>=?", (value['business_date'],)))
-    available = min(_source(db, value['supplier_id'], value['source_type'], value['source_id'], day)['available_cents'] for day in boundaries)
+    available = min(_source(db, value['supplier_id'], value['source_type'], value['source_id'], day, value.get('source_origin', 'operating'))['available_cents'] for day in boundaries)
     if value['business_date'] < dated['source_date']:
         raise ValueError('تاريخ الاسترداد لا يسبق مصدر الرصيد')
     if value['amount_cents'] > available:
@@ -184,8 +201,8 @@ def save_refund(db, data, refund_id=None):
             return get_refund(db, prior['id'])
     accounting_periods.assert_document_dates(db, value['business_date'], old['business_date'] if refund_id is not None else None)
     _refund_preview(db, value)
-    fields = ('supplier_id','source_type','source_id','business_date','reference','reason','notes','method','funding_account_id','details','amount_cents')
-    values = [value[k] if k != 'details' else _json(value[k]) for k in fields]
+    fields = ('supplier_id','source_type','source_id','source_origin','business_date','reference','reason','notes','method','funding_account_id','details','amount_cents')
+    values = [value.get(k, 'operating') if k != 'details' else _json(value[k]) for k in fields]
     stamp = payables._now()
     if refund_id is None:
         code = payables._code(db, 'supplier_refund', 'SRF')
@@ -222,8 +239,9 @@ def get_refund(db, refund_id, as_of=None):
     result = _require(db, 'supplier_refunds', refund_id)
     result['details'] = json.loads(result['details'])
     supplier = _require(db, 'suppliers', result['supplier_id'])
-    source_table = 'supplier_payments' if result['source_type'] == 'advance' else 'invoices'
+    source_table = ('opening_supplier_advances' if result.get('source_origin') == 'opening' else 'supplier_payments') if result['source_type'] == 'advance' else 'invoices'
     source = _require(db, source_table, result['source_id'])
+    result['is_opening'] = bool(opening_suppliers.invoice_origin(db, result['source_id'])) if result['source_type'] == 'return_credit' else False
     account = _require(db, 'accounts', result['funding_account_id'])
     result.update(supplier_name=supplier['name'], supplier_code=supplier['code'], source_code=source['code'], funding_account_name=account['name'], funding_account_code=account['code'],
                   voucher_title='إذن قبض من المورد' if result['method']=='cash' else 'إشعار استرداد بنكي من المورد')
@@ -345,9 +363,10 @@ def _assert_dependencies_unused(db, payment, business_date):
         if refund_consumption(db, kind, ident, '9999-12-31'):
             raise ValueError('توجد عملية استرداد مرتبطة برصيد السداد؛ راجع المستند المرتبط قبل عكس السداد')
         if _has(db, 'supplier_refund_reversals'):
+            origin_sql, origin_args = opening_suppliers.origin_clause(db, 'supplier_refunds', 'f')
             refund_history = db.execute('''SELECT rr.business_date reversal_date FROM supplier_refunds f
                 LEFT JOIN supplier_refund_reversals rr ON rr.refund_id=f.id
-                WHERE f.source_type=? AND f.source_id=? AND f.status='posted' ''', (kind, ident))
+                WHERE f.source_type=? AND f.source_id=? AND f.status='posted' ''' + origin_sql, (kind, ident, *origin_args))
             if any(row['reversal_date'] is None or row['reversal_date'] > business_date for row in refund_history):
                 raise ValueError('توجد عملية استرداد مرتبطة؛ اعكسها أولًا واختر تاريخ عكس السداد بعد عكس الاسترداد')
         if not _has(db, 'supplier_settlements'):
@@ -358,7 +377,8 @@ def _assert_dependencies_unused(db, payment, business_date):
             continue
         # Reversing before a dependency's later reversal would invalidate the
         # historical interval in between even if all-time consumption is zero.
-        rows = db.execute("SELECT s.business_date,r.business_date reversal_date FROM supplier_settlements s LEFT JOIN supplier_settlement_reversals r ON r.settlement_id=s.id WHERE s.source_type=? AND s.source_id=? AND s.status='posted'", (kind, ident))
+        origin_sql, origin_args = opening_suppliers.origin_clause(db, 'supplier_settlements', 's')
+        rows = db.execute("SELECT s.business_date,r.business_date reversal_date FROM supplier_settlements s LEFT JOIN supplier_settlement_reversals r ON r.settlement_id=s.id WHERE s.source_type=? AND s.source_id=? AND s.status='posted'" + origin_sql, (kind, ident, *origin_args))
         if any(r['reversal_date'] is None or r['reversal_date'] > business_date for r in rows):
             raise ValueError('توجد تسوية مرتبطة؛ اعكسها أولًا واختر تاريخ عكس السداد بعد عكس التسوية')
 

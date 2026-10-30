@@ -66,24 +66,49 @@ def _source_rows(db, as_of):
         WHERE p.status='posted' AND p.payment_date<=? ORDER BY p.payment_date,p.id''', (as_of,))]
 
 
-def _remitted(db, as_of, payment_id=None, account_id=None, exclude_remittance_id=None):
-    if not (_has(db, 'withholding_remittances') and _has(db, 'withholding_remittance_allocations')):
+def _remitted(db, as_of, payment_id=None, account_id=None, exclude_remittance_id=None, opening_source_id=None):
+    if not _has(db, 'withholding_remittances'):
         return 0
-    predicates, values = ["r.status='posted'", 'r.business_date<=?'], [as_of]
-    if payment_id is not None:
-        predicates.append('a.payment_id=?')
-        values.append(payment_id)
-    if account_id is not None:
-        predicates.append('a.account_id=?')
-        values.append(account_id)
+    tables = []
+    if opening_source_id is None and _has(db, 'withholding_remittance_allocations'):
+        tables.append(('withholding_remittance_allocations', 'payment_id', payment_id))
+    if payment_id is None and _has(db, 'opening_remittance_allocations'):
+        tables.append(('opening_remittance_allocations', 'opening_source_id', opening_source_id))
+    total = 0
+    for table, source_field, source_id in tables:
+        predicates, values = ["r.status='posted'", 'r.business_date<=?'], [as_of]
+        if source_id is not None:
+            predicates.append('a.' + source_field + '=?')
+            values.append(source_id)
+        if account_id is not None:
+            predicates.append('a.account_id=?')
+            values.append(account_id)
+        if exclude_remittance_id is not None:
+            predicates.append('r.id<>?')
+            values.append(exclude_remittance_id)
+        if _has(db, 'withholding_remittance_reversals'):
+            predicates.append('NOT EXISTS(SELECT 1 FROM withholding_remittance_reversals rr WHERE rr.remittance_id=r.id AND rr.business_date<=?)')
+            values.append(as_of)
+        total += db.execute('SELECT COALESCE(SUM(a.amount_cents),0) FROM ' + table + ' a JOIN withholding_remittances r ON r.id=a.remittance_id WHERE ' + ' AND '.join(predicates), values).fetchone()[0]
+    return total
+
+
+def _opening_sources(db, as_of):
+    if not _has(db, 'opening_withholding_sources'):
+        return []
+    return [dict(row) for row in db.execute('SELECT * FROM opening_withholding_sources WHERE business_date<=? ORDER BY business_date,id', (as_of,))]
+
+
+def opening_capacity(db, source_id, business_date, exclude_remittance_id=None):
+    source_id = _id(source_id, 'رصيد الخصم الافتتاحي')
     if exclude_remittance_id is not None:
-        predicates.append('r.id<>?')
-        values.append(exclude_remittance_id)
-    if _has(db, 'withholding_remittance_reversals'):
-        predicates.append('NOT EXISTS(SELECT 1 FROM withholding_remittance_reversals rr WHERE rr.remittance_id=r.id AND rr.business_date<=?)')
-        values.append(as_of)
-    return db.execute('''SELECT COALESCE(SUM(a.amount_cents),0) FROM withholding_remittance_allocations a
-        JOIN withholding_remittances r ON r.id=a.remittance_id WHERE ''' + ' AND '.join(predicates), values).fetchone()[0]
+        exclude_remittance_id = _id(exclude_remittance_id, 'التوريد المستبعد')
+    row = db.execute('SELECT * FROM opening_withholding_sources WHERE id=?', (source_id,)).fetchone() if _has(db, 'opening_withholding_sources') else None
+    if row is None:
+        raise ValueError('رصيد الخصم الافتتاحي غير موجود')
+    return min((row['amount_cents'] if row['business_date'] <= day else 0) -
+               _remitted(db, day, opening_source_id=source_id, exclude_remittance_id=exclude_remittance_id)
+               for day in capacity_dates(db, business_date))
 
 
 def capacity_dates(db, business_date):
@@ -128,6 +153,7 @@ def account_capacity(db, account_id, business_date, exclude_remittance_id=None):
     for day in capacity_dates(db, business_date):
         withheld = sum(row['withholding_cents'] for row in _source_rows(db, day)
                        if row['account_id'] == account_id and not _reversed_payment(db, row['payment_id'], day))
+        withheld += sum(row['amount_cents'] for row in _opening_sources(db, day) if row['account_id'] == account_id)
         amounts.append(withheld - _remitted(db, day, account_id=account_id, exclude_remittance_id=exclude_remittance_id))
     return min(amounts)
 
@@ -140,6 +166,9 @@ def _account_ids(db):
         ids.update(row[0] for row in db.execute('SELECT DISTINCT account_id FROM payment_withholding'))
     if _has(db, 'withholding_remittance_allocations'):
         ids.update(row[0] for row in db.execute('SELECT DISTINCT account_id FROM withholding_remittance_allocations'))
+    for table in ('opening_withholding_sources', 'opening_remittance_allocations'):
+        if _has(db, table):
+            ids.update(row[0] for row in db.execute('SELECT DISTINCT account_id FROM ' + table))
     return sorted(ids)
 
 
@@ -187,7 +216,7 @@ def balance_report(db, as_of=None, period_from=None, period_to=None):
         payment_id, original = raw['payment_id'], raw['withholding_cents']
         reversal = _reversed_payment(db, payment_id, as_of)
         withheld = 0 if reversal else original
-        source = {'payment_id': payment_id, 'payment_code': raw['payment_code'], 'code': raw['payment_code'],
+        source = {'source_type': 'payment_withholding', 'source_id': payment_id, 'payment_id': payment_id, 'payment_code': raw['payment_code'], 'code': raw['payment_code'],
                   'payment_date': raw['payment_date'], 'source_date': raw['payment_date'],
                   'account_id': raw['account_id'], 'supplier_id': raw['supplier_id'],
                   'supplier_name': raw['supplier_name'], 'supplier_code': raw['supplier_code'],
@@ -199,7 +228,7 @@ def balance_report(db, as_of=None, period_from=None, period_to=None):
                   'journal_id': raw['journal_entry_id'], 'remittance_ids': [], 'remittance_codes': []}
         account = account_rows.get(raw['account_id'], {})
         source.update(account_code=account.get('code', ''), account_name=account.get('name', 'حساب مفقود'))
-        sources[payment_id] = source
+        sources[('payment', payment_id)] = source
         if original:
             add_event(raw['journal_entry_id'], 'supplier_payment', payment_id, [(raw['account_id'], raw['supplier_id'], 0, original)])
             if reversal:
@@ -207,21 +236,48 @@ def balance_report(db, as_of=None, period_from=None, period_to=None):
         if raw['supplier_id'] not in suppliers:
             exceptions.append({'type': 'missing_source_supplier', 'message': 'مورد مصدر الخصم غير موجود.', 'payment_id': payment_id, 'supplier_id': raw['supplier_id']})
 
+    for raw in _opening_sources(db, as_of):
+        import opening_controls
+        if not opening_controls.source_matches(db, 'withholding', raw):
+            exceptions.append({'type': 'invalid_opening_withholding_source', 'message': 'مصدر الخصم الافتتاحي لا يطابق كشف الافتتاح المعتمد.', 'source_id': raw['id'], 'journal_id': raw['journal_id'], 'account_id': raw['account_id']})
+        source = {'source_type': 'opening_withholding', 'source_id': raw['id'], 'opening_source_id': raw['id'],
+                  'payment_id': None, 'payment_code': raw['code'], 'code': raw['code'],
+                  'payment_date': raw['source_date'], 'source_date': raw['source_date'], 'business_date': raw['business_date'],
+                  'reference': raw['reference'], 'account_id': raw['account_id'], 'supplier_id': raw['supplier_id'],
+                  'supplier_name': raw['supplier_name'], 'supplier_code': raw['supplier_code'],
+                  'supplier_tax_number': raw['supplier_tax_number'], 'withholding_code': 'OPENING',
+                  'withholding_name': 'رصيد خصم افتتاحي', 'rate_basis': None, 'rate': None,
+                  'original_cents': raw['amount_cents'], 'original_withholding_cents': raw['amount_cents'],
+                  'withheld_cents': raw['amount_cents'], 'effective_withholding_cents': raw['amount_cents'],
+                  'remitted_cents': 0, 'source_reversed': False, 'reversal_date': None,
+                  'journal_id': raw['journal_id'], 'opening_line_id': raw['opening_line_id'],
+                  'remittance_ids': [], 'remittance_codes': []}
+        account = account_rows.get(raw['account_id'], {})
+        source.update(account_code=account.get('code', ''), account_name=account.get('name', 'حساب مفقود'))
+        sources[('opening', raw['id'])] = source
+        add_event(raw['journal_id'], 'opening_balance', raw['opening_line_id'],
+                  [(raw['account_id'], raw['supplier_id'], 0, raw['amount_cents'])])
+        if raw['supplier_id'] not in suppliers:
+            exceptions.append({'type': 'missing_source_supplier', 'message': 'مورد رصيد الخصم الافتتاحي غير موجود.', 'source_id': raw['id'], 'supplier_id': raw['supplier_id']})
+
     orphan_remitted = 0
     if _has(db, 'withholding_remittances') and _has(db, 'withholding_remittance_allocations'):
         for raw in db.execute("SELECT * FROM withholding_remittances WHERE status='posted' AND business_date<=? ORDER BY business_date,id", (as_of,)):
             remittance = dict(raw)
             reversal = _remittance_reversal(db, remittance['id'], as_of)
             allocations = [dict(row) for row in db.execute('SELECT * FROM withholding_remittance_allocations WHERE remittance_id=? ORDER BY payment_id', (remittance['id'],))]
+            if _has(db, 'opening_remittance_allocations'):
+                allocations += [{**dict(row), 'source_type': 'opening_withholding'} for row in db.execute('SELECT * FROM opening_remittance_allocations WHERE remittance_id=? ORDER BY opening_source_id', (remittance['id'],))]
             if not allocations or sum(row['amount_cents'] for row in allocations) != remittance['amount_cents']:
                 exceptions.append({'type': 'remittance_allocation_difference', 'message': 'إجمالي تخصيصات التوريد لا يطابق مستنده.', 'remittance_id': remittance['id'], 'journal_id': remittance['journal_id']})
             lines = []
             for allocation in allocations:
                 amount = allocation['amount_cents']
                 lines.append((allocation['account_id'], allocation['supplier_id'], amount, 0))
-                source = sources.get(allocation['payment_id'])
+                is_opening = allocation.get('source_type') == 'opening_withholding'
+                source = sources.get(('opening', allocation['opening_source_id']) if is_opening else ('payment', allocation['payment_id']))
                 if source is None:
-                    exceptions.append({'type': 'orphan_remittance_source', 'message': 'تخصيص توريد بلا مصدر خصم معتمد في تاريخ التقرير.', 'remittance_id': remittance['id'], 'payment_id': allocation['payment_id'], 'journal_id': remittance['journal_id'], 'account_id': allocation['account_id']})
+                    exceptions.append({'type': 'orphan_remittance_source', 'message': 'تخصيص توريد بلا مصدر خصم معتمد في تاريخ التقرير.', 'remittance_id': remittance['id'], 'payment_id': allocation.get('payment_id'), 'opening_source_id': allocation.get('opening_source_id'), 'journal_id': remittance['journal_id'], 'account_id': allocation['account_id']})
                     if not reversal:
                         orphan_remitted += amount
                     continue
@@ -317,5 +373,5 @@ def balance_report(db, as_of=None, period_from=None, period_to=None):
             'all_totals': all_totals, 'accounts': sorted(accounts.values(), key=lambda row: row['code']),
             'matched': matched, 'exceptions': exceptions,
             'notes': ['الرصيد موجب عند وجود خصم مستحق، وسالب عند وجود توريد زائد بعد تصحيح المصدر.',
-                      'محددات الفترة ترشح تاريخ سداد مصدر الخصم؛ المطابقة والحد الأقصى للتوريد يراجعان جميع الفترات.',
+                      'محددات الفترة ترشح تاريخ مصدر الخصم، بما فيه المصدر الافتتاحي السابق؛ المطابقة والحد الأقصى للتوريد يراجعان جميع الفترات.',
                       'الأرصدة الدائنة والمديونيات على حسابين تاريخيين مختلفين لا تسوى تلقائيًا بينهما.']}

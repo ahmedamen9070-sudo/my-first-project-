@@ -129,15 +129,17 @@ def _blocked_accounts(db):
     payable, advances = supplier_reconciliation._account_ids(db)
     result = set(payable) | set(advances)
     result.update(r[0] for r in db.execute("SELECT account_id FROM account_mappings WHERE module='الضرائب' OR role='issued_cheques'"))
-    for table, field in (('payment_withholding', 'account_id'), ('invoice_tax_settings', 'recoverable_account_id'), ('withholding_remittance_allocations', 'account_id')):
+    for table, field in (('payment_withholding', 'account_id'), ('invoice_tax_settings', 'recoverable_account_id'),
+                         ('withholding_remittance_allocations', 'account_id'), ('opening_withholding_sources', 'account_id'),
+                         ('opening_remittance_allocations', 'account_id')):
         columns = {r['name'] for r in db.execute('PRAGMA table_info(' + table + ')')}
         if field in columns:
             result.update(r[0] for r in db.execute(f'SELECT DISTINCT {field} FROM {table}') if r[0] is not None)
     return result
 
 
-def _custody_account(db):
-    account = payables.mapping_account(db, 'الخزينة', 'operating_custodies')
+def _custody_account(db, require_confirmed=True):
+    account = payables.mapping_account(db, 'الخزينة', 'operating_custodies', require_confirmed=require_confirmed)
     if not account['code'].startswith('115') or account['normal_side'] != 'debit' or account['id'] in _blocked_accounts(db):
         raise ValueError('حساب العهد التشغيلية يجب أن يكون أصلًا مدينًا مستقلًا عن الموردين والضرائب')
     return account
@@ -157,6 +159,7 @@ def config(db):
             'expense_accounts': [dict(r) for r in db.execute("SELECT * FROM accounts WHERE active=1 AND posting=1 AND normal_side='debit' AND substr(code,1,1) IN('5','6','8') ORDER BY code") if r['id'] not in blocked],
             'departments': [dict(r) for r in db.execute('SELECT * FROM departments ORDER BY id')],
             'custody_mapping': dict(mapping) if mapping else None,
+            'opening_status': accounting.opening_status(db),
             'notes': ['العهد التشغيلية مستقلة عن مقدمات الموردين وسلف الرواتب.', 'تسوية العهدة بمستندات المصروف المباشر فقط؛ فواتير الموردين المسجلة تستخدم دورة الموردين دون تكرار.']}
 
 
@@ -239,6 +242,11 @@ def _prepare(db, value):
         source = payables._require(db, 'custody_documents', value['source_issue_id'])
         if source['kind'] != 'issue' or source['status'] != 'posted':
             raise ValueError('اختر عهدة مصروفة ومعتمدة')
+        origin = _opening_origin(db, source['id'])
+        if origin:
+            import opening_controls
+            if not opening_controls.source_matches(db, 'custody', {**source, **origin}):
+                raise ValueError('مصدر العهدة الافتتاحية لا يطابق كشف الافتتاح المعتمد')
         if value['business_date'] < source['business_date']:
             raise ValueError('تاريخ التسوية أو الرد لا يسبق صرف العهدة')
         account = payables._posting_account(db, source['custody_account_id'])
@@ -275,7 +283,7 @@ def _prepare(db, value):
             line.update(department_name=dep['name'], cost_code=dep['cost_code'])
     before = supplier_payments.account_balance(db, cash['id'], value['business_date']) if cash else None
     after = before + (amount if value['kind'] == 'return' else -amount) if cash else None
-    warnings = ['أرصدة الخزائن من الحركات المسجلة فقط؛ الأرصدة الافتتاحية الفعلية مؤجلة.']
+    warnings = [accounting.opening_status(db, value['business_date'])['message']]
     if cash and after < 0:
         warnings.append('الحركة تؤدي إلى رصيد دفتري سالب للخزينة؛ راجع التمويل الفعلي وأرصدة البداية.')
     return {**value, 'custodian_id': custodian['id'], 'custodian_name': custodian['name'],
@@ -365,6 +373,8 @@ def approve(db, document_id, data):
 
 def reverse(db, document_id, data):
     old = payables._require(db, 'custody_documents', document_id)
+    if _opening_origin(db, document_id):
+        raise ValueError('العهدة الافتتاحية تحفظ ضمن قيد الافتتاح؛ تسويتها وردها من مستنداتها المستقلة')
     if not isinstance(data, dict):
         raise ValueError('بيانات عكس العهدة غير صحيحة')
     value = {'document_id': document_id, 'business_date': payables._date(data.get('business_date'), 'تاريخ العكس'),
@@ -406,8 +416,19 @@ def reverse(db, document_id, data):
     return detail(db, document_id)
 
 
+def _opening_origin(db, document_id):
+    if not payables._has_table(db, 'opening_custody_sources'):
+        return None
+    row = db.execute('SELECT * FROM opening_custody_sources WHERE document_id=?', (document_id,)).fetchone()
+    return dict(row) if row else None
+
+
 def detail(db, document_id, as_of=None):
     document = payables._require(db, 'custody_documents', document_id)
+    origin = _opening_origin(db, document_id)
+    document.update(is_opening=origin is not None, opening_line_id=origin['opening_line_id'] if origin else None,
+                    opening_batch_id=origin['opening_batch_id'] if origin else None,
+                    source_title='عهدة افتتاحية تحت التسوية' if origin else None)
     as_of = _as_of(as_of) if as_of is not None else ALL_TIME
     person = payables._require(db, 'custodians', document['custodian_id'])
     document['custodian_name'] = document['custodian_name_snapshot'] or person['name']
@@ -442,7 +463,8 @@ def list_documents(db, as_of=None):
 def _document_lines(db, document):
     amount, control, cash = document['amount_cents'], document['custody_account_id'], document['cash_account_id']
     if document['kind'] == 'issue':
-        return [(control, amount, 0, None, None), (cash, 0, amount, None, None)]
+        origin = _opening_origin(db, document['id'])
+        return [(control, amount, 0, None, None), (origin['clearing_account_id'] if origin else cash, 0, amount, None, None)]
     if document['kind'] == 'return':
         return [(cash, amount, 0, None, None), (control, 0, amount, None, None)]
     return [(r['expense_account_id'], r['amount_cents'], 0, r['department_id'], None) for r in db.execute('SELECT * FROM custody_lines WHERE document_id=? ORDER BY id', (document['id'],))] + [(control, 0, amount, None, None)]
@@ -454,7 +476,7 @@ def balance_report(db, as_of=None):
     if not payables._has_table(db, 'custody_documents'):
         return {'as_of': as_of, 'currency': accounting.get_settings(db)['base_currency'], 'issues': [], 'custodians': [], 'accounts': [],
                 'totals': dict.fromkeys(('issued_cents','settled_cents','returned_cents','remaining_cents','ledger_cents','difference_cents'),0),
-                'matched': True, 'exceptions': [], 'counts': {'issues': 0,'open_issues': 0,'exceptions': 0}}
+                'matched': True, 'exceptions': [], 'opening_status': accounting.opening_status(db, as_of), 'counts': {'issues': 0,'open_issues': 0,'exceptions': 0}}
     people = {r['id']: dict(r) for r in db.execute('SELECT * FROM custodians')}
     accounts = {r['id']: dict(r) for r in db.execute('SELECT * FROM accounts')}
     all_documents = {r['id']: dict(r) for r in db.execute('SELECT * FROM custody_documents')}
@@ -477,7 +499,13 @@ def balance_report(db, as_of=None):
             if source is None or source['kind'] != 'issue' or source['status'] != 'posted' or source['custodian_id'] != document['custodian_id'] or source['custody_account_id'] != document['custody_account_id'] or source['business_date'] > document['business_date']:
                 issue('invalid_custody_source', 'مستند التسوية أو الرد لا يطابق عهدة المصدر.', document_id=document['id'], custodian_id=document['custodian_id'])
         rows = _document_lines(db, document)
-        by_journal[document['journal_id']] = (document, 'custody_' + document['kind'], document['id'], document['business_date'], rows)
+        origin = _opening_origin(db, document['id'])
+        if origin:
+            import opening_controls
+            if not opening_controls.source_matches(db, 'custody', {**document, **origin}):
+                issue('invalid_opening_custody_source', 'مصدر العهدة الافتتاحية لا يطابق كشف الافتتاح المعتمد.', document_id=document['id'], custodian_id=document['custodian_id'])
+        by_journal[document['journal_id']] = (document, 'opening_balance' if origin else 'custody_' + document['kind'],
+            origin['opening_line_id'] if origin else document['id'], document['business_date'], rows)
         reversal = reversals.get(document['id'])
         if reversal:
             expected[key] -= amount
@@ -505,8 +533,9 @@ def balance_report(db, as_of=None):
     totals = dict.fromkeys(('issued_cents','settled_cents','returned_cents','remaining_cents','ledger_cents','difference_cents'), 0)
     for document in docs.values():
         factor = 0 if document['id'] in reversals else 1
-        field = {'issue':'issued_cents','settlement':'settled_cents','return':'returned_cents'}[document['kind']]
-        totals[field] += factor * document['amount_cents']
+        origin = _opening_origin(db, document['id'])
+        field = 'opening_cents' if origin else {'issue':'issued_cents','settlement':'settled_cents','return':'returned_cents'}[document['kind']]
+        totals[field] = totals.get(field, 0) + factor * document['amount_cents']
         if document['kind'] != 'issue':
             continue
         children = [d for d in docs.values() if d['source_issue_id'] == document['id'] and d['id'] not in reversals]
@@ -524,7 +553,8 @@ def balance_report(db, as_of=None):
                            'custody_account_name': account.get('name',''), 'purpose': document['purpose'],
                            'issued_cents': factor * document['amount_cents'], 'settled_cents': settled, 'returned_cents': returned,
                            'remaining_cents': remaining, 'available_cents': max(remaining,0),
-                           'effective_status': 'reversed' if not factor else 'posted'})
+                           'effective_status': 'reversed' if not factor else 'posted', 'is_opening': origin is not None,
+                           'source_title': 'عهدة افتتاحية تحت التسوية' if origin else 'عهدة مصروفة'})
     person_rows, account_rows = [], []
     for custodian_id in sorted(set(people) | {key[0] for key in actual if key[0] is not None}):
         book = sum(value for key,value in expected.items() if key[0] == custodian_id)
@@ -547,7 +577,7 @@ def balance_report(db, as_of=None):
     totals['remaining_cents'] = sum(expected.values())
     totals['ledger_cents'] = sum(actual.values())
     totals['difference_cents'] = totals['ledger_cents'] - totals['remaining_cents']
-    return {'as_of': as_of, 'currency': accounting.get_settings(db)['base_currency'], 'issues': sorted(issue_rows,key=lambda r:(r['business_date'],r['id'])),
+    return {'as_of': as_of, 'currency': accounting.get_settings(db)['base_currency'], 'opening_status': accounting.opening_status(db, as_of), 'issues': sorted(issue_rows,key=lambda r:(r['business_date'],r['id'])),
             'custodians': person_rows, 'accounts': account_rows, 'totals': totals,
             'matched': not exceptions and totals['difference_cents'] == 0 and all(r['matched'] for r in person_rows + account_rows),
             'exceptions': exceptions, 'counts': {'issues':len(issue_rows),'open_issues':sum(r['remaining_cents'] > 0 for r in issue_rows),'exceptions':len(exceptions)}}

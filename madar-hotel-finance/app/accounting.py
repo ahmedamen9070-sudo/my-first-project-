@@ -367,3 +367,14 @@ def export_csv(db):
     for account in snapshot(db)['accounts']:
         writer.writerow([_safe_cell(x) for x in [account['code'], account['name'], account['parent_code'], 'حركة' if account['posting'] else 'تجميع', 'مدين' if account['normal_side'] == 'debit' else 'دائن', 'مركز مالي' if account['statement'] == 'balance_sheet' else 'نتائج أعمال', 'نشط' if account['active'] else 'موقوف', account['notes']]])
     return stream.getvalue()
+def opening_status(db, as_of=None):
+    """Read the recorded opening baseline without assuming unentered amounts."""
+    exists = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='opening_batches'").fetchone()
+    row = db.execute("SELECT id,code,business_date FROM opening_batches WHERE status='posted' ORDER BY id LIMIT 1").fetchone() if exists else None
+    if not row:
+        return {'status': 'pending', 'batch_id': None, 'code': None, 'business_date': None,
+                'included': False, 'message': 'لم يُعتمد كشف الأرصدة الافتتاحية بعد؛ أدخل أرصدة البداية الفعلية من إعدادات الفندق.'}
+    included = as_of is None or as_of >= row['business_date']
+    message = ('يتضمن الرصيد الأرصدة الافتتاحية المعتمدة بتاريخ ' if included else 'تاريخ العرض يسبق الأرصدة الافتتاحية المعتمدة بتاريخ ') + row['business_date'] + '.'
+    return {'status': 'posted', 'batch_id': row['id'], 'code': row['code'],
+            'business_date': row['business_date'], 'included': included, 'message': message}

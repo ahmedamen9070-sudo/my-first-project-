@@ -6,8 +6,10 @@ individual supplier differences and unidentified control lines still fail review
 """
 from __future__ import annotations
 
+import json
 import accounting
 import payables
+import opening_suppliers
 
 
 def _has_table(db, name):
@@ -27,6 +29,8 @@ def _account_ids(db):
             (advance if row['role'] == 'supplier_advances' else payable).add(row['account_id'])
     if _has_table(db, 'invoice_postings'):
         payable.update(row[0] for row in db.execute('SELECT DISTINCT payable_account_id FROM invoice_postings'))
+    if _has_table(db, 'opening_supplier_advances'):
+        advance.update(row[0] for row in db.execute('SELECT DISTINCT account_id FROM opening_supplier_advances'))
     if _has_table(db, 'journal_entries'):
         # These original source journals provide historical accounts even if the
         # current mapping no longer points to them. Cash funding is a credit in
@@ -48,6 +52,7 @@ def _account_ids(db):
 def _source_supplier(db, source_type, source_id):
     """Expected supplier when the journal links to a known source document."""
     direct = {
+        'opening_balance': ('opening_lines', 'id'),
         'supplier_invoice': ('invoices', 'id'),
         'supplier_return': ('supplier_returns', 'id'),
         'supplier_payment': ('supplier_payments', 'id'),
@@ -83,6 +88,8 @@ def _source_journal_issue(db, journal):
     another. The implemented source whitelist is intentionally explicit; adding
     a future opening/general-journal workflow requires its own reference here.
     """
+    if journal['source_type'] == 'opening_balance':
+        return _opening_journal_issue(db, journal)
     references = {
         'supplier_invoice': (('invoices', 'invoice_postings'), '''
             SELECT p.journal_id,i.business_date entry_date,
@@ -140,13 +147,62 @@ def _source_journal_issue(db, journal):
     return None
 
 
+def _opening_journal_issue(db, journal):
+    """Opening control lines must own their adapter document and exact dimension."""
+    if not _has_table(db, 'opening_lines'):
+        return {'type': 'missing_supplier_source', 'message': 'سطر افتتاح المورد غير موجود.'}
+    source = db.execute('SELECT * FROM opening_lines WHERE id=?', (journal['source_id'],)).fetchone()
+    if source is None:
+        return {'type': 'missing_supplier_source', 'message': 'سطر افتتاح المورد غير موجود.'}
+    source = dict(source)
+    correct = source.get('kind') in opening_suppliers.KINDS and source.get('journal_id') == journal['journal_id'] and source.get('business_date') == journal['entry_date']
+    batch = db.execute('SELECT * FROM opening_batches WHERE id=?', (source['batch_id'],)).fetchone() if _has_table(db, 'opening_batches') else None
+    correct = correct and batch is not None and batch['status'] == 'posted' and batch['business_date'] == source['business_date']
+    correct = correct and source.get('side') == ('credit' if source.get('kind') == 'supplier_invoice' else 'debit') and source.get('custodian_id') is None
+    expected_debit = source.get('amount_cents') if source.get('side') == 'debit' else 0
+    expected_credit = source.get('amount_cents') if source.get('side') == 'credit' else 0
+    if batch is not None:
+        expected = [(source['account_id'], expected_debit, expected_credit, source['supplier_id'], source['department_id'], source['id']),
+                    (batch['clearing_account_id'], expected_credit, expected_debit, None, None, None)]
+        actual = [tuple(row) for row in db.execute('''SELECT account_id,debit_cents,credit_cents,supplier_id,department_id,source_line_id
+            FROM journal_lines WHERE journal_id=?''', (journal['journal_id'],))]
+        sorter = lambda row: tuple(-1 if value is None else value for value in row)
+        correct = correct and sorted(actual,key=sorter) == sorted(expected,key=sorter)
+    if source.get('kind') == 'supplier_advance':
+        doc = db.execute('SELECT * FROM opening_supplier_advances WHERE opening_line_id=?', (source['id'],)).fetchone() if _has_table(db, 'opening_supplier_advances') else None
+        expected_doc = {key: source[key] for key in ('account_id','supplier_id','reference','amount_cents','business_date','source_date')}
+        expected_doc.update(journal_id=journal['journal_id'],id=source['document_id'])
+        correct = (correct and source['document_type'] == 'opening_supplier_advance'
+                   and doc is not None and all(doc[key] == value for key,value in expected_doc.items()))
+    else:
+        doc = db.execute('''SELECT i.*,p.journal_id,p.payable_account_id,o.kind opening_kind,o.source_date opening_source_date,
+            o.remaining_net_cents,t.due_date FROM invoices i JOIN invoice_postings p ON p.invoice_id=i.id
+            JOIN opening_supplier_invoices o ON o.invoice_id=i.id JOIN invoice_terms t ON t.invoice_id=i.id
+            WHERE o.opening_line_id=?''', (source['id'],)).fetchone() if _has_table(db, 'opening_supplier_invoices') else None
+        try:
+            saved_net = json.loads(source.get('extra_json') or '{}').get('remaining_net_cents')
+        except (ValueError, TypeError, AttributeError):
+            saved_net = -1
+        expected_doc = {key: source[key] for key in ('supplier_id','reference','business_date','due_date')}
+        expected_doc.update(journal_id=journal['journal_id'],payable_account_id=source['account_id'],
+            opening_kind=source['kind'],opening_source_date=source['source_date'],
+            total_cents=source['amount_cents'] if source['kind'] == 'supplier_invoice' else -source['amount_cents'],
+            remaining_net_cents=saved_net,subtotal_cents=saved_net or 0,tax_cents=0,id=source['document_id'])
+        correct = (correct and source['document_type'] == 'opening_supplier_invoice' and doc is not None
+                   and doc['status'] != 'cancelled' and all(doc[key] == value for key,value in expected_doc.items()))
+        if doc is not None and db.execute('SELECT 1 FROM invoice_lines WHERE invoice_id=?', (doc['id'],)).fetchone():
+            correct = False
+    if not correct:
+        return {'type': 'supplier_source_journal_mismatch', 'message': 'قيد افتتاح المورد أو حسابه أو مستنده لا يطابق سطر الافتتاح المعتمد.'}
+    return None
+
+
 
 def _advance_documents(db, supplier_id, as_of, advance_ids):
     """Remaining document advances grouped by their original posting account."""
     balances, exceptions = {}, []
-    if not _has_table(db, 'supplier_payments'):
-        return balances, exceptions
-    for payment in db.execute("SELECT * FROM supplier_payments WHERE supplier_id=? AND status='posted' AND payment_date<=?", (supplier_id, as_of)).fetchall():
+    payments = db.execute("SELECT * FROM supplier_payments WHERE supplier_id=? AND status='posted' AND payment_date<=?", (supplier_id, as_of)).fetchall() if _has_table(db, 'supplier_payments') else []
+    for payment in payments:
         payment = dict(payment)
         if _has_table(db, 'supplier_payment_reversals') and db.execute('SELECT 1 FROM supplier_payment_reversals WHERE payment_id=? AND business_date<=?', (payment['id'], as_of)).fetchone():
             continue
@@ -160,11 +216,13 @@ def _advance_documents(db, supplier_id, as_of, advance_ids):
             if _has_table(db, 'supplier_settlement_reversals'):
                 reverse_clause = ' AND NOT EXISTS(SELECT 1 FROM supplier_settlement_reversals r WHERE r.settlement_id=s.id AND r.business_date<=?)'
                 values.append(as_of)
-            used = db.execute("SELECT COALESCE(SUM(s.amount_cents),0) FROM supplier_settlements s WHERE s.source_type='advance' AND s.source_id=? AND s.status='posted' AND s.business_date<=?" + reverse_clause, values).fetchone()[0]
+            origin_clause, origin_values = opening_suppliers.origin_clause(db, 'supplier_settlements', 's')
+            used = db.execute("SELECT COALESCE(SUM(s.amount_cents),0) FROM supplier_settlements s WHERE s.source_type='advance' AND s.source_id=? AND s.status='posted' AND s.business_date<=?" + reverse_clause + origin_clause, (*values, *origin_values)).fetchone()[0]
         refunded = 0
         if _has_table(db, 'supplier_refunds'):
             refund_clause, refund_values = payables._refund_effective_filter(db, 'r', as_of)
-            refunded = db.execute("SELECT COALESCE(SUM(r.amount_cents),0) FROM supplier_refunds r WHERE r.source_type='advance' AND r.source_id=? AND r.status='posted' AND r.business_date<=?" + refund_clause, (payment['id'], as_of, *refund_values)).fetchone()[0]
+            origin_clause, origin_values = opening_suppliers.origin_clause(db, 'supplier_refunds', 'r')
+            refunded = db.execute("SELECT COALESCE(SUM(r.amount_cents),0) FROM supplier_refunds r WHERE r.source_type='advance' AND r.source_id=? AND r.status='posted' AND r.business_date<=?" + refund_clause + origin_clause, (payment['id'], as_of, *refund_values, *origin_values)).fetchone()[0]
         rows = db.execute("""SELECT DISTINCT l.account_id,j.id journal_id FROM journal_lines l JOIN journal_entries j ON j.id=l.journal_id
             WHERE j.sealed=1 AND j.source_type='supplier_payment' AND j.source_id=? AND l.debit_cents>0""", (payment['id'],)).fetchall()
         account_rows = [row for row in rows if row['account_id'] in advance_ids]
@@ -175,6 +233,12 @@ def _advance_documents(db, supplier_id, as_of, advance_ids):
         if remaining < 0:
             exceptions.append({'type': 'overused_advance_source', 'message': 'تسويات واستردادات الدفعة المقدمة تتجاوز قيمتها الأصلية.', 'supplier_id': supplier_id, 'payment_id': payment['id'], 'journal_id': account_rows[0]['journal_id']})
         account_id = account_rows[0]['account_id']
+        balances[account_id] = balances.get(account_id, 0) + remaining
+    for source in opening_suppliers.advance_sources(db, supplier_id, as_of):
+        remaining = source['original_cents'] - source['settled_cents'] - source['refunded_cents']
+        if remaining < 0:
+            exceptions.append({'type': 'overused_advance_source', 'message': 'تسويات واستردادات مقدم المورد الافتتاحي تتجاوز قيمته.', 'supplier_id': supplier_id, 'opening_advance_id': source['source_id']})
+        account_id = source['account_id']
         balances[account_id] = balances.get(account_id, 0) + remaining
     return balances, exceptions
 

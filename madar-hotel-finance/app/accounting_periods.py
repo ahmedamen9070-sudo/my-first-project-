@@ -23,6 +23,8 @@ DRAFTS = (
     ('treasury', 'treasury_documents', 'business_date', 'مستند خزينة'),
     ('custody', 'custody_documents', 'business_date', 'مستند عهدة'),
     ('cash_count', 'cash_counts', 'business_date', 'محضر جرد'),
+    ('bank', 'bank_documents', 'business_date', 'مستند بنك'),
+    ('opening_balance', 'opening_batches', 'business_date', 'كشف أرصدة افتتاحية'),
 )
 
 
@@ -76,6 +78,10 @@ def initialize(db):
 def assert_open(db, business_date):
     """No mutation; old installations without this additive module remain open."""
     business_date = _date(business_date)
+    if _has(db, 'opening_batches'):
+        baseline = db.execute("SELECT business_date FROM opening_batches WHERE status='posted' ORDER BY id LIMIT 1").fetchone()
+        if baseline and business_date < baseline['business_date']:
+            raise ValueError('تاريخ المستند يسبق الأرصدة الافتتاحية المعتمدة بتاريخ ' + baseline['business_date'])
     if not _has(db, 'accounting_periods'):
         return
     row = db.execute("SELECT month FROM accounting_periods WHERE status='closed' AND month>=? ORDER BY month DESC LIMIT 1", (business_date[:7],)).fetchone()
@@ -234,7 +240,8 @@ def preview(db, month):
             'cash_count_review': count_review,
             'events': [_event(db, row['id']) for row in db.execute('SELECT id FROM accounting_period_events WHERE month=? ORDER BY id', (month,))] if _has(db, 'accounting_period_events') else [],
             'blockers': blockers, 'can_close': not blockers,
-            'warnings': ['الأرصدة الافتتاحية لم تؤكد في هذه المرحلة؛ القفل مراجعة للحركات المسجلة فقط.',
+            'opening_status': accounting.opening_status(db, end),
+            'warnings': [accounting.opening_status(db, end)['message'],
                          'القفل الشهري لا ينشئ قيود إقفال أرباح وخسائر ولا يمثل إقرارًا ضريبيًا.'] + count_warnings}
 
 

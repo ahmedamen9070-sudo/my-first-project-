@@ -142,11 +142,15 @@ def blocked_counter_account_ids(db):
         ('payment_withholding', 'account_id'),
         ('invoice_tax_settings', 'recoverable_account_id'),
         ('withholding_remittance_allocations', 'account_id'),
+        ('opening_withholding_sources', 'account_id'),
+        ('opening_remittance_allocations', 'account_id'),
         ('custody_documents', 'custody_account_id'),
     ):
         if field in _columns(db, table):
             blocked.update(row[0] for row in db.execute(
                 f'SELECT DISTINCT {field} FROM {table} WHERE {field} IS NOT NULL'))
+    import banks
+    blocked.update(banks.issued_cheque_account_ids(db))
     for row in db.execute("SELECT id FROM accounts WHERE code LIKE '111%' OR code LIKE '112%' OR code='115003'"):
         blocked.add(row[0])
     return blocked
@@ -187,9 +191,10 @@ def config(db):
     return {'cash_accounts': cash, 'counter_accounts_by_kind': counter,
             'departments': [dict(row) for row in db.execute('SELECT * FROM departments ORDER BY code,id')],
             'currency': accounting.get_settings(db)['base_currency'],
+            'opening_status': accounting.opening_status(db),
             'notes': ['الموردون والضرائب والعهد لهم مستندات مستقلة؛ لا تعِد تسجيل حركة خزينة سبق ترحيلها من تلك المسارات.',
                       'الحسابات المرتبطة بالموديولات لا تظهر كحساب مقابل للسند المباشر؛ اختر تصنيفًا مباشرًا مناسبًا.',
-                      'الأرصدة المعروضة من الحركات المسجلة فقط؛ الأرصدة الافتتاحية الفعلية مؤجلة.',
+                      accounting.opening_status(db)['message'],
                       'السند المباشر لا يحسب ضريبة فاتورة أو خصمًا؛ الفواتير والمصروفات الضريبية من دورة الموردين.']}
 
 

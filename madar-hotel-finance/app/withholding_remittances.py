@@ -19,6 +19,22 @@ HEADER_FIELDS = ('business_date', 'period_from', 'period_to', 'authority_name',
 SNAPSHOT_FIELDS = ('payment_id', 'account_id', 'supplier_id', 'amount_cents',
                    'payment_code', 'supplier_name', 'supplier_code', 'supplier_tax_number',
                    'withholding_code', 'withholding_name', 'rate_basis')
+OPENING_SNAPSHOT_FIELDS = ('opening_source_id', 'account_id', 'supplier_id', 'amount_cents',
+                           'payment_code', 'supplier_name', 'supplier_code', 'supplier_tax_number',
+                           'source_date', 'reference')
+
+
+def _has(db, table):
+    return db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone() is not None
+
+
+def _source_key(row):
+    return ('opening', row.get('source_id', row.get('opening_source_id'))) if row.get('source_type') == 'opening_withholding' else ('payment', row.get('payment_id'))
+
+
+def _allocation_sort(row):
+    kind, ident = _source_key(row)
+    return (0 if kind == 'payment' else 1, ident)
 
 
 def initialize(db):
@@ -128,11 +144,20 @@ def _payload(data):
     for item in incoming:
         if not isinstance(item, dict):
             raise ValueError('بند توزيع التوريد غير صحيح')
-        payment_id = payables._id(item.get('payment_id'))
-        if payment_id in seen:
+        if item.get('source_type') == 'opening_withholding':
+            source_id = payables._id(item.get('source_id', item.get('opening_source_id')))
+            if item.get('payment_id') is not None:
+                raise ValueError('رصيد الخصم الافتتاحي مستقل عن سندات السداد')
+            allocation = {'source_type': 'opening_withholding', 'source_id': source_id, 'amount_cents': _amount(item)}
+        else:
+            if item.get('source_type') not in (None, 'payment_withholding'):
+                raise ValueError('نوع مصدر الخصم غير صحيح')
+            allocation = {'payment_id': payables._id(item.get('payment_id')), 'amount_cents': _amount(item)}
+        key = _source_key(allocation)
+        if key in seen:
             raise ValueError('سند الخصم مكرر في توزيع التوريد')
-        seen.add(payment_id)
-        allocations.append({'payment_id': payment_id, 'amount_cents': _amount(item)})
+        seen.add(key)
+        allocations.append(allocation)
     amount = payables._money(sum(row['amount_cents'] for row in allocations), False)
     if ('amount' in data or 'amount_cents' in data) and _amount(data) != amount:
         raise ValueError('إجمالي التوريد يجب أن يساوي مجموع توزيعه')
@@ -141,7 +166,7 @@ def _payload(data):
             'reference': payables._text(data, 'reference', 100, True), 'method': method,
             'funding_account_id': payables._id(data.get('funding_account_id')),
             'details': _details(method, data.get('details', {})), 'notes': payables._text(data, 'notes', 2000),
-            'amount_cents': amount, 'allocations': sorted(allocations, key=lambda row: row['payment_id'])}
+            'amount_cents': amount, 'allocations': sorted(allocations, key=_allocation_sort)}
 
 
 def _funding(db, value):
@@ -157,31 +182,36 @@ def _preview(db, value, exclude_remittance_id=None):
     import supplier_payments
     funding = _funding(db, value)
     report = balances.balance_report(db, value['business_date'], value['period_from'], value['period_to'])
-    sources = {row['payment_id']: row for row in report['sources']}
+    sources = {_source_key(row): row for row in report['sources']}
     allocations, by_account = [], {}
     for item in value['allocations']:
-        source = sources.get(item['payment_id'])
+        source_key = _source_key(item)
+        source = sources.get(source_key)
         if source is None:
             raise ValueError('سند الخصم ليس مرحلًا ضمن الفترة وتاريخ التوريد المحددين')
-        available = max(balances.capacity(db, item['payment_id'], value['business_date'], exclude_remittance_id), 0)
+        opening = source_key[0] == 'opening'
+        available = max((balances.opening_capacity if opening else balances.capacity)(db, source_key[1], value['business_date'], exclude_remittance_id), 0)
         if item['amount_cents'] > available:
             raise ValueError('التوريد يتجاوز الخصم المتاح للسند ' + source.get('payment_code', source.get('code', '')))
         # Snapshot the original source identity and account, never today's code
         # rate or mapping. These rows later identify the remittance journal.
-        original = db.execute('SELECT * FROM payment_withholding WHERE payment_id=?', (item['payment_id'],)).fetchone()
-        if original is None or original['withholding_cents'] <= 0:
+        original = db.execute('SELECT * FROM opening_withholding_sources WHERE id=?' if opening else 'SELECT * FROM payment_withholding WHERE payment_id=?', (source_key[1],)).fetchone()
+        if original is None or original['amount_cents' if opening else 'withholding_cents'] <= 0:
             raise ValueError('سند السداد لا يحتوي خصمًا مرحلًا موجبًا')
         original = dict(original)
         account = payables._posting_account(db, original['account_id'])
         if account['normal_side'] != 'credit' or not account['code'].startswith('2') or account['id'] == funding['id']:
             raise ValueError('حساب الخصم الأصلي ليس التزامًا مستقلًا صالحًا للتوريد')
-        line = {'payment_id': item['payment_id'], 'account_id': account['id'],
+        line = {'payment_id': None if opening else item['payment_id'], 'account_id': account['id'],
                 'supplier_id': original['supplier_id'], 'amount_cents': item['amount_cents'],
                 'payment_code': source.get('payment_code', source.get('code', '')),
                 'supplier_name': original['supplier_name'], 'supplier_code': original['supplier_code'],
-                'supplier_tax_number': original['supplier_tax_number'], 'withholding_code': original['code'],
-                'withholding_name': original['name'], 'rate_basis': original['rate_basis'],
+                'supplier_tax_number': original['supplier_tax_number'], 'withholding_code': 'OPENING' if opening else original['code'],
+                'withholding_name': 'رصيد خصم افتتاحي' if opening else original['name'], 'rate_basis': None if opening else original['rate_basis'],
                 'account_code': account['code'], 'account_name': account['name'], 'available_cents': available}
+        if opening:
+            line.update(source_type='opening_withholding', source_id=source_key[1], opening_source_id=source_key[1],
+                        source_date=original['source_date'], payment_date=original['source_date'], reference=original['reference'], rate=None)
         allocations.append(line)
         by_account[account['id']] = by_account.get(account['id'], 0) + item['amount_cents']
     account_caps = {}
@@ -255,18 +285,34 @@ def save(db, data, remittance_id=None):
         remittance_id = old['id']
         db.execute(f"UPDATE withholding_remittances SET request_fingerprint=?,{','.join(field+'=?' for field in HEADER_FIELDS)},details=?,revision=revision+1,updated_at=? WHERE id=?", (digest, *values, _json(value['details']), stamp, remittance_id))
         db.execute('DELETE FROM withholding_remittance_allocations WHERE remittance_id=?', (remittance_id,))
+        if _has(db, 'opening_remittance_allocations'):
+            db.execute('DELETE FROM opening_remittance_allocations WHERE remittance_id=?', (remittance_id,))
     else:
         code = payables._code(db, 'withholding_remittance', 'WTR')
         remittance_id = db.execute(f"INSERT INTO withholding_remittances(code,request_key,request_fingerprint,{','.join(HEADER_FIELDS)},details,created_at,updated_at) VALUES(?,?,?,{','.join('?' for _ in HEADER_FIELDS)},?,?,?)", (code, key, digest, *values, _json(value['details']), stamp, stamp)).lastrowid
     for row in plan['allocations']:
-        db.execute(f"INSERT INTO withholding_remittance_allocations(remittance_id,{','.join(SNAPSHOT_FIELDS)}) VALUES(?,{','.join('?' for _ in SNAPSHOT_FIELDS)})", (remittance_id, *(row[field] for field in SNAPSHOT_FIELDS)))
+        opening = row.get('source_type') == 'opening_withholding'
+        table = 'opening_remittance_allocations' if opening else 'withholding_remittance_allocations'
+        fields = OPENING_SNAPSHOT_FIELDS if opening else SNAPSHOT_FIELDS
+        db.execute(f"INSERT INTO {table}(remittance_id,{','.join(fields)}) VALUES(?,{','.join('?' for _ in fields)})", (remittance_id, *(row[field] for field in fields)))
     payables._audit(db, 'withholding_remittance', remittance_id, 'update_draft' if old else 'create_draft', {'amount_cents': value['amount_cents'], 'matched': plan['matched']})
     return detail(db, remittance_id)
 
 
 def _stored_value(db, old):
+    allocations = [dict(row) for row in db.execute('SELECT payment_id,amount_cents FROM withholding_remittance_allocations WHERE remittance_id=? ORDER BY payment_id', (old['id'],))]
+    if _has(db, 'opening_remittance_allocations'):
+        allocations += [{'source_type': 'opening_withholding', 'source_id': row['opening_source_id'], 'amount_cents': row['amount_cents']}
+                        for row in db.execute('SELECT opening_source_id,amount_cents FROM opening_remittance_allocations WHERE remittance_id=? ORDER BY opening_source_id', (old['id'],))]
     return {field: old[field] for field in HEADER_FIELDS} | {'details': json.loads(old['details']),
-        'allocations': [dict(row) for row in db.execute('SELECT payment_id,amount_cents FROM withholding_remittance_allocations WHERE remittance_id=? ORDER BY payment_id', (old['id'],))]}
+        'allocations': allocations}
+
+
+def _snapshots(db, remittance_id):
+    rows = [dict(row) for row in db.execute(f"SELECT {','.join(SNAPSHOT_FIELDS)} FROM withholding_remittance_allocations WHERE remittance_id=? ORDER BY payment_id", (remittance_id,))]
+    if _has(db, 'opening_remittance_allocations'):
+        rows += [{**dict(row), 'source_type': 'opening_withholding'} for row in db.execute(f"SELECT {','.join(OPENING_SNAPSHOT_FIELDS)} FROM opening_remittance_allocations WHERE remittance_id=? ORDER BY opening_source_id", (remittance_id,))]
+    return rows
 
 
 def approve(db, remittance_id, data):
@@ -287,13 +333,14 @@ def approve(db, remittance_id, data):
     for boundary in balances.capacity_dates(db, old['business_date']):
         if not balances.balance_report(db, boundary)['matched']:
             raise ValueError('توجد فروق لاحقة في حسابات الخصم؛ راجع القيود قبل اعتماد توريد بتاريخ أقدم')
-    stored = [dict(row) for row in db.execute(f"SELECT {','.join(SNAPSHOT_FIELDS)} FROM withholding_remittance_allocations WHERE remittance_id=? ORDER BY payment_id", (old['id'],))]
-    current = [{field: row[field] for field in SNAPSHOT_FIELDS} for row in plan['allocations']]
+    stored = _snapshots(db, old['id'])
+    current = [{**{field: row[field] for field in (OPENING_SNAPSHOT_FIELDS if row.get('source_type') == 'opening_withholding' else SNAPSHOT_FIELDS)},
+                **({'source_type': 'opening_withholding'} if row.get('source_type') == 'opening_withholding' else {})} for row in plan['allocations']]
     if stored != current:
         raise accounting.ConflictError('تغيرت نسخة مصادر التوريد؛ راجع المستند وأعد حفظه')
     _receipt_unique(db, value, old['id'])
     lines = [{'account_id': row['account_id'], 'debit_cents': row['amount_cents'],
-              'supplier_id': row['supplier_id'], 'source_line_id': row['payment_id']} for row in stored]
+              'supplier_id': row['supplier_id'], 'source_line_id': row.get('payment_id', row.get('opening_source_id'))} for row in stored]
     lines.append({'account_id': old['funding_account_id'], 'credit_cents': old['amount_cents']})
     journal_id = payables.create_journal(db, 'withholding_remittance', old['id'], old['business_date'], lines)
     db.execute("UPDATE withholding_remittances SET status='posted',journal_id=?,revision=revision+1,updated_at=? WHERE id=?", (journal_id, payables._now(), old['id']))
@@ -350,6 +397,15 @@ def detail(db, remittance_id, as_of=None):
         JOIN supplier_payments p ON p.id=r.payment_id WHERE remittance_id=? ORDER BY r.payment_id''', (result['id'],))]
     for line in result['allocations']:
         line['rate'] = format(Decimal(line['rate_basis']) / 100, '.2f')
+    if _has(db, 'opening_remittance_allocations'):
+        for row in db.execute('''SELECT r.*,a.code account_code,a.name account_name
+            FROM opening_remittance_allocations r JOIN accounts a ON a.id=r.account_id
+            WHERE remittance_id=? ORDER BY r.opening_source_id''', (result['id'],)):
+            line = dict(row)
+            line.update(source_type='opening_withholding', source_id=line['opening_source_id'], payment_id=None,
+                        payment_date=line['source_date'], withholding_code='OPENING',
+                        withholding_name='رصيد خصم افتتاحي', rate_basis=None, rate=None)
+            result['allocations'].append(line)
     result['journal'] = payables.journal_detail(db, result['journal_id']) if result['journal_id'] else None
     as_of = payables._as_of(as_of if as_of is not None else '9999-12-31')
     reversed_row = db.execute('SELECT * FROM withholding_remittance_reversals WHERE remittance_id=? AND business_date<=?', (result['id'], as_of)).fetchone()

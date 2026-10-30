@@ -212,6 +212,38 @@ def create(*a,**kw):
             else:raise AssertionError('Native cash count PDF was not created')
             assert output.read_bytes().startswith(b'%PDF')
             result['cash_count_pdf_bytes']=output.stat().st_size
+            w.run_js('document.querySelector("#cash-count-window [data-cash-count-action=close]").click()')
+            w.run_js('(async()=>{const cfg=await api("opening-config"),m=cfg.clearing_mapping;await api("account-mappings/"+m.id,"PUT",{revision:m.revision,status:"confirmed"});const capital=cfg.general_accounts.find(a=>a.code.startsWith("3"));const data={request_key:crypto.randomUUID(),business_date:"2026-01-01",reference:"NATIVE-OPEN-TEST",lines:[{kind:"general",account_id:cfg.accounts.find(a=>a.code==="111002").id,side:"debit",amount:"100"},{kind:"general",account_id:cfg.accounts.find(a=>a.code==="112001").id,side:"debit",amount:"200"},{kind:"general",account_id:capital.id,side:"credit",amount:"300"}]};let d=await api("opening-balances","POST",data);d=await api("opening-balances/"+d.id+"/post","POST",{revision:d.revision});await OpeningBalances.openBatch(d.id);})().catch(e=>{window.__nativeOpeningError=e.message})')
+            for _ in range(100):
+                if evaluate('Boolean(document.querySelector("#opening-window[open] [data-opening-action=print]"))'):break
+                time.sleep(.1)
+            else:raise AssertionError('Native opening position did not load: '+str(evaluate('window.__nativeOpeningError||""')))
+            result['opening']=evaluate('document.querySelector("#opening-title").innerText')
+            ImageGrab.grab().save(str(Path(__file__).with_name('opening-native.png')))
+            output.unlink()
+            w.run_js('document.querySelector("#opening-window [data-opening-action=print]").click()')
+            for _ in range(100):
+                if output.exists() and output.stat().st_size>100 and not getattr(w,'_am_print_state',[[]])[0]:break
+                time.sleep(.1)
+            else:raise AssertionError('Native opening PDF was not created')
+            assert output.read_bytes().startswith(b'%PDF')
+            result['opening_pdf_bytes']=output.stat().st_size
+            w.run_js('document.querySelector("#opening-window [data-opening-action=close]").click()')
+            w.run_js('Banking.book(accountingData.accounts.find(a=>a.code==="112001").id,{from_date:"2026-01-01",to_date:"2026-12-31"})')
+            for _ in range(100):
+                if evaluate('Boolean(document.querySelector("#bank-window[open] [data-bank-action=print-report]"))'):break
+                time.sleep(.1)
+            else:raise AssertionError('Native bank book did not load')
+            result['banks']=evaluate('document.querySelector("#bank-title").innerText')
+            ImageGrab.grab().save(str(Path(__file__).with_name('banks-native.png')))
+            output.unlink()
+            w.run_js('document.querySelector("#bank-window [data-bank-action=print-report]").click()')
+            for _ in range(100):
+                if output.exists() and output.stat().st_size>100 and not getattr(w,'_am_print_state',[[]])[0]:break
+                time.sleep(.1)
+            else:raise AssertionError('Native bank book PDF was not created')
+            assert output.read_bytes().startswith(b'%PDF')
+            result['bank_pdf_bytes']=output.stat().st_size
             result['ok']=True
         except BaseException as e:
             result['error']=str(e)

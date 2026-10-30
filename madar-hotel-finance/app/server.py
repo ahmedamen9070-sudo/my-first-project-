@@ -2,6 +2,7 @@
 """A&M Accounting Hotel for Audit &Control development application: single operator, isolated draft purchasing workflow."""
 import argparse, json, os, sqlite3, secrets, mimetypes, shutil, tempfile
 import accounting, payables, supplier_payments, supplier_settlements, supplier_adjustments, taxation, accounting_periods, ledger_reports, withholding, withholding_balances, withholding_remittances, supplier_review, treasury, custodies, treasury_reports, cash_counts
+import opening_balances, banks
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -48,6 +49,8 @@ def init():
         treasury.initialize(db)
         custodies.initialize(db)
         cash_counts.initialize(db)
+        banks.initialize(db)
+        opening_balances.initialize(db)
 
 def now(): return datetime.now(timezone.utc).isoformat(timespec='seconds')
 def code(db,kind,prefix):
@@ -216,6 +219,25 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path.startswith('/api/'):
                 with connect() as db:
+                    if path in ('/api/opening-config','/api/opening-balances','/api/bank-config','/api/bank-accounts','/api/bank-documents','/api/opening-bank-cheques'):
+                        db.execute('BEGIN')
+                        if path=='/api/opening-config': result=opening_balances.config(db)
+                        elif path=='/api/opening-balances': result=opening_balances.list_batches(db)
+                        elif path=='/api/bank-config': result=banks.config(db)
+                        elif path=='/api/bank-accounts': result=banks.config(db)['masters']
+                        elif path=='/api/bank-documents': result=banks.list_documents(db,args.get('as_of',[None])[0])
+                        else: result=banks.list_opening_cheques(db,args.get('as_of',[None])[0])
+                        return self.send(200,result)
+                    if len(parts)==3 and parts[:2] in (['api','opening-balances'],['api','bank-documents'],['api','opening-bank-cheques']):
+                        db.execute('BEGIN')
+                        pk=ident(int(parts[2]))
+                        result=opening_balances.detail(db,pk) if parts[1]=='opening-balances' else banks.detail(db,pk,args.get('as_of',[None])[0]) if parts[1]=='bank-documents' else banks.opening_cheque_detail(db,pk,args.get('as_of',[None])[0])
+                        return self.send(200,result)
+                    if path in ('/api/bank-book','/api/bank-position'):
+                        db.execute('BEGIN')
+                        account=args.get('account_id',[''])[0]
+                        result=banks.book(db,ident(int(account)) if account else None,args.get('from_date',[None])[0],args.get('to_date',[None])[0]) if path=='/api/bank-book' else banks.position(db,args.get('as_of',[None])[0])
+                        return self.send(200,result)
                     if path=='/api/cash-count-config':
                         db.execute('BEGIN')
                         return self.send(200,cash_counts.config(db))
@@ -287,7 +309,7 @@ class Handler(BaseHTTPRequestHandler):
                     if path=='/api/bootstrap':
                         settings=accounting.get_settings(db)
                         masters=payables.master_data(db);tax_config=taxation.snapshot(db);masters.update(tax_codes=tax_config['codes'],tax_settings=tax_config['settings'])
-                        return self.send(200,{**masters,'csrf':TOKEN,'departments':[dict(r) for r in db.execute('SELECT * FROM departments ORDER BY id')],'suppliers':[payables.enrich_supplier(db,dict(r)) for r in db.execute('SELECT * FROM suppliers ORDER BY id DESC')],'products':[payables.enrich_product(db,dict(r)) for r in db.execute('SELECT * FROM products ORDER BY id DESC')],'payment_methods':supplier_payments.payment_methods(),'mode':'development','currency':settings['base_currency'],'currency_configured':bool(settings['base_currency']),'accounting_settings':settings})
+                        return self.send(200,{**masters,'csrf':TOKEN,'departments':[dict(r) for r in db.execute('SELECT * FROM departments ORDER BY id')],'suppliers':[payables.enrich_supplier(db,dict(r)) for r in db.execute('SELECT * FROM suppliers ORDER BY id DESC')],'products':[payables.enrich_product(db,dict(r)) for r in db.execute('SELECT * FROM products ORDER BY id DESC')],'payment_methods':supplier_payments.payment_methods(),'mode':'development','currency':settings['base_currency'],'currency_configured':bool(settings['base_currency']),'accounting_settings':settings,'opening_status':accounting.opening_status(db)})
                     if path=='/api/dashboard':
                         r=dict(db.execute("SELECT COUNT(*) count,COALESCE(SUM(total_cents),0) total_cents FROM invoices i WHERE status='draft' AND NOT EXISTS(SELECT 1 FROM invoice_postings p WHERE p.invoice_id=i.id)").fetchone())
                         r['suppliers']=db.execute('SELECT COUNT(*) FROM suppliers').fetchone()[0];r['products']=db.execute('SELECT COUNT(*) FROM products').fetchone()[0]
@@ -356,7 +378,29 @@ class Handler(BaseHTTPRequestHandler):
             path=urlparse(self.path).path;parts=path.strip('/').split('/')
             with connect() as db:
                 db.execute('BEGIN IMMEDIATE')
-                if path=='/api/cash-count-preview' and method=='POST':
+                if path=='/api/opening-preview' and method=='POST':
+                    result=opening_balances.preview(db,data)
+                elif path=='/api/opening-balances' and method=='POST':
+                    result=opening_balances.save(db,data)
+                elif len(parts)==3 and parts[:2]==['api','opening-balances'] and method=='PUT':
+                    result=opening_balances.save(db,data,ident(int(parts[2])))
+                elif len(parts)==4 and parts[:2]==['api','opening-balances'] and parts[3]=='post' and method=='POST':
+                    result=opening_balances.approve(db,ident(int(parts[2])),data)
+                elif path=='/api/bank-preview' and method=='POST':
+                    result=banks.preview(db,data)
+                elif path=='/api/bank-documents' and method=='POST':
+                    result=banks.save(db,data)
+                elif len(parts)==3 and parts[:2]==['api','bank-documents'] and method=='PUT':
+                    result=banks.save(db,data,ident(int(parts[2])))
+                elif len(parts)==4 and parts[:2]==['api','bank-documents'] and parts[3] in ('post','reverse') and method=='POST':
+                    result=(banks.approve if parts[3]=='post' else banks.reverse)(db,ident(int(parts[2])),data)
+                elif path=='/api/bank-accounts' and method=='POST':
+                    result=banks.save_account(db,data)
+                elif len(parts)==3 and parts[:2]==['api','bank-accounts'] and method=='PUT':
+                    result=banks.save_account(db,data,ident(int(parts[2])))
+                elif len(parts)==4 and parts[:2]==['api','opening-bank-cheques'] and parts[3]=='clear' and method=='POST':
+                    result=banks.clear_opening_cheque(db,ident(int(parts[2])),data)
+                elif path=='/api/cash-count-preview' and method=='POST':
                     result=cash_counts.preview(db,data)
                 elif path=='/api/cash-counts' and method=='POST':
                     result=cash_counts.save(db,data)

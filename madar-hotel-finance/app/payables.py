@@ -356,7 +356,19 @@ def enrich_invoice(db, row):
         line['returnable_quantity'] = _quantity_text(Decimal(line['quantity']) - returned_qty)
         line['returned_cents'] = returned_cents
         result['lines'].append(line)
+    result.update(_opening_invoice_metadata(db, invoice_id))
     return taxation.enrich_invoice(db,result)
+
+
+def _opening_invoice_metadata(db, invoice_id):
+    import opening_suppliers
+    origin = opening_suppliers.invoice_origin(db, invoice_id)
+    if origin is None:
+        return {'is_opening': False}
+    return {'is_opening': True, 'opening_kind': origin['kind'],
+            'opening_line_id': origin['opening_line_id'], 'opening_source_date': origin['source_date'],
+            'remaining_net_cents': origin['remaining_net_cents'],
+            'document_label': 'رصيد دائن افتتاحي' if origin['kind'] == 'supplier_credit' else 'فاتورة سابقة / رصيد افتتاحي'}
 
 
 def _invoice_detail(db, invoice_id):
@@ -419,6 +431,8 @@ def post_invoice(db, invoice_id, data):
 def _return_payload(db, data, old=None):
     invoice_id = _id(data.get('invoice_id', old['invoice_id'] if old else None))
     invoice = _require(db, 'invoices', invoice_id)
+    if _opening_invoice_metadata(db, invoice_id)['is_opening']:
+        raise ValueError('الرصيد الافتتاحي مستند سابق دون أصناف؛ لا ينشأ عنه مرتجع مخزني')
     posting = db.execute('SELECT * FROM invoice_postings WHERE invoice_id=?', (invoice_id,)).fetchone()
     if not posting or invoice['status'] == 'cancelled':
         raise ValueError('المرتجع يرتبط بفاتورة معتمدة فقط')
@@ -623,6 +637,7 @@ def open_invoices(db, supplier_id, as_of=None):
                    settled_cents=settled, credit_used_cents=used, credit_refunded_cents=refunded,
                    raw_outstanding_cents=raw, outstanding_cents=max(raw, 0), return_credit_cents=max(-raw, 0),
                    days_overdue=max((date.fromisoformat(as_of) - date.fromisoformat(row['due_date'])).days, 0))
+        row.update(_opening_invoice_metadata(db, invoice_id))
         result.append(row)
     return result
 
@@ -633,10 +648,11 @@ def invoice_outstanding(db, invoice_id, as_of=None):
 
 
 def _advance_balance(db, supplier_id, as_of):
-    if not _has_table(db, 'supplier_payments') or not _has_table(db, 'payment_allocations'):
-        return 0
-    clause, values = _payment_effective_filter(db, 'p', as_of)
-    original = db.execute("SELECT COALESCE(SUM(p.amount_cents-(SELECT COALESCE(SUM(pa.amount_cents),0) FROM payment_allocations pa WHERE pa.payment_id=p.id)),0) FROM supplier_payments p WHERE p.supplier_id=? AND p.status='posted' AND p.payment_date<=?" + clause, (supplier_id, as_of, *values)).fetchone()[0]
+    import opening_suppliers
+    original = opening_suppliers.total_advances(db, supplier_id, as_of)
+    if _has_table(db, 'supplier_payments') and _has_table(db, 'payment_allocations'):
+        clause, values = _payment_effective_filter(db, 'p', as_of)
+        original += db.execute("SELECT COALESCE(SUM(p.amount_cents-(SELECT COALESCE(SUM(pa.amount_cents),0) FROM payment_allocations pa WHERE pa.payment_id=p.id)),0) FROM supplier_payments p WHERE p.supplier_id=? AND p.status='posted' AND p.payment_date<=?" + clause, (supplier_id, as_of, *values)).fetchone()[0]
     _, _, settled = _settlement_effects(db, supplier_id, as_of)
     _, refunded = _refund_effects(db, supplier_id, as_of)
     return original - settled - refunded
@@ -691,6 +707,8 @@ def _advance_account_ids(db):
         ids.update(row[0] for row in db.execute("SELECT DISTINCT l.account_id FROM journal_lines l JOIN journal_entries j ON j.id=l.journal_id WHERE j.source_type='supplier_payment' AND l.debit_cents>0") if row[0] not in payable_ids)
     if _has_table(db, 'supplier_settlements'):
         ids.update(row[0] for row in db.execute("SELECT DISTINCT source_account_id FROM supplier_settlements WHERE source_type='advance' AND status='posted'"))
+    if _has_table(db, 'opening_supplier_advances'):
+        ids.update(row[0] for row in db.execute('SELECT DISTINCT account_id FROM opening_supplier_advances'))
     return sorted(ids)
 
 
@@ -700,7 +718,16 @@ def _statement_document(db, row):
               'supplier_settlement': ('supplier_settlements', 'id'), 'supplier_refund': ('supplier_refunds', 'id'),
               'withholding_remittance': ('withholding_remittances', 'id')}
     source_type = row['type']
-    if source_type in lookup:
+    if source_type == 'opening_balance':
+        if _has_table(db, 'opening_supplier_invoices'):
+            doc = db.execute('SELECT i.code,i.reference FROM invoices i JOIN opening_supplier_invoices o ON o.invoice_id=i.id WHERE o.opening_line_id=?', (row['document_id'],)).fetchone()
+            if doc:
+                row.update(code=doc['code'], reference=doc['reference'])
+        if _has_table(db, 'opening_supplier_advances'):
+            doc = db.execute('SELECT code,reference FROM opening_supplier_advances WHERE opening_line_id=?', (row['document_id'],)).fetchone()
+            if doc:
+                row.update(code=doc['code'], reference=doc['reference'])
+    elif source_type in lookup:
         table, key = lookup[source_type]
         if _has_table(db, table):
             doc = db.execute(f'SELECT code FROM {table} WHERE {key}=?', (row['document_id'],)).fetchone()
@@ -740,7 +767,7 @@ def statement(db, supplier_id, as_of=None):
         WHERE j.sealed=1 AND l.supplier_id=? AND j.entry_date<=? GROUP BY j.id ORDER BY j.entry_date,j.id""", (*account_ids, *account_ids, *advance_ids, supplier_id, as_of)).fetchall()
     balance = 0
     rows = []
-    labels = {'supplier_invoice': 'فاتورة مورد', 'supplier_return': 'مرتجع مورد', 'supplier_payment': 'سداد مورد',
+    labels = {'opening_balance': 'رصيد افتتاحي للمورد', 'supplier_invoice': 'فاتورة مورد', 'supplier_return': 'مرتجع مورد', 'supplier_payment': 'سداد مورد',
               'supplier_cheque_clearance': 'صرف شيك مورد', 'supplier_settlement': 'تسوية رصيد مورد',
               'supplier_settlement_reversal': 'عكس تسوية مورد', 'supplier_refund': 'استرداد من مورد',
               'supplier_refund_reversal': 'عكس استرداد من مورد',
@@ -788,7 +815,10 @@ def ledger_summary(db, as_of=None):
         gross_refunds = db.execute("SELECT COALESCE(SUM(amount_cents),0) FROM supplier_refunds WHERE status='posted' AND business_date<=?", (as_of,)).fetchone()[0]
         clause, values = _refund_effective_filter(db, 'r', as_of)
         refunds = db.execute("SELECT COALESCE(SUM(r.amount_cents),0) FROM supplier_refunds r WHERE r.status='posted' AND r.business_date<=?" + clause, (as_of, *values)).fetchone()[0]
-    return {'posted_invoices_cents': db.execute("SELECT COALESCE(SUM(i.total_cents),0) FROM invoices i JOIN invoice_postings p ON p.invoice_id=i.id WHERE i.status<>'cancelled' AND i.business_date<=?", (as_of,)).fetchone()[0],
+    opening_filter = ' AND NOT EXISTS(SELECT 1 FROM opening_supplier_invoices o WHERE o.invoice_id=i.id)' if _has_table(db, 'opening_supplier_invoices') else ''
+    opening_payables = db.execute('SELECT COALESCE(SUM(i.total_cents),0) FROM invoices i JOIN opening_supplier_invoices o ON o.invoice_id=i.id WHERE i.business_date<=?', (as_of,)).fetchone()[0] if opening_filter else 0
+    return {'posted_invoices_cents': db.execute("SELECT COALESCE(SUM(i.total_cents),0) FROM invoices i JOIN invoice_postings p ON p.invoice_id=i.id WHERE i.status<>'cancelled' AND i.business_date<=?" + opening_filter, (as_of,)).fetchone()[0],
+            'opening_payables_cents': opening_payables,
             'returns_cents': db.execute("SELECT COALESCE(SUM(total_cents),0) FROM supplier_returns WHERE status='posted' AND business_date<=?", (as_of,)).fetchone()[0],
             'payments_cents': effective, 'gross_payments_cents': gross, 'reversed_payments_cents': gross-effective,
             'refunds_cents': refunds, 'gross_refunds_cents': gross_refunds, 'reversed_refunds_cents': gross_refunds-refunds,

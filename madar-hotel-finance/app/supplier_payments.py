@@ -371,6 +371,10 @@ def _cheque_unique(db, value, exclude_id=0):
         return None, None
     bank = value['details']['bank_name'].casefold()
     number = value['details']['cheque_number'].casefold()
+    if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='opening_bank_cheques'").fetchone():
+        for opening in db.execute('SELECT bank_account_id,bank_name,cheque_number FROM opening_bank_cheques'):
+            if (opening['bank_account_id']==value['funding_account_id'] or opening['bank_name'].casefold()==bank) and opening['cheque_number'].casefold()==number:
+                raise ValueError('رقم الشيك مسجل ضمن الشيكات الافتتاحية على نفس البنك')
     if db.execute("SELECT id FROM supplier_payments WHERE method='cheque' AND status!='cancelled' AND (cheque_bank_key=? OR funding_account_id=?) AND cheque_number_key=? AND id!=?", (bank, value['funding_account_id'], number, exclude_id)).fetchone():
         raise ValueError('رقم الشيك مسجل بالفعل على نفس البنك')
     return bank, number

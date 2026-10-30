@@ -159,14 +159,16 @@ def update_code(db,code_id,data):
     return _code(db.execute('SELECT * FROM withholding_codes WHERE id=?',(code_id,)).fetchone())
 
 
-def _account(db,value):
+def _account(db,value,require_confirmed=True):
     account = db.execute('''SELECT a.*,m.status mapping_status FROM account_mappings m JOIN accounts a ON a.id=m.account_id
         WHERE m.module='الضرائب' AND m.role='withholding_payable' ''').fetchone()
-    if account is None or not account['active'] or not account['posting'] or account['normal_side']!='credit' or not account['code'].startswith('2') or account['mapping_status']!='confirmed':
+    if account is None or not account['active'] or not account['posting'] or account['normal_side']!='credit' or not account['code'].startswith('2') or (require_confirmed and account['mapping_status']!='confirmed'):
         raise ValueError('راجع وأكد ربط حساب الخصم والتحصيل المستحق للغير قبل استخدام الخصم')
     forbidden = {row[0] for row in db.execute("SELECT account_id FROM account_mappings WHERE role IN('payable_control','capital_payable_control','supplier_advances','issued_cheques')")}
     if _has(db,'invoice_postings'):
         forbidden.update(row[0] for row in db.execute('SELECT DISTINCT payable_account_id FROM invoice_postings'))
+    if _has(db,'opening_bank_cheques'):
+        forbidden.update(row[0] for row in db.execute('SELECT DISTINCT liability_account_id FROM opening_bank_cheques'))
     if _has(db,'supplier_payments') and _has(db,'journal_lines'):
         # Original cheque liability accounts remain distinct even after today's
         # mapping changes. The saved WHT credit is excluded from this lookup.
@@ -223,6 +225,12 @@ def prepare(db,value,allocations,exclude_payment_id=None):
         if invoice is None or invoice['total_cents']<=0:
             raise ValueError('وعاء الخصم يرتبط بفاتورة معتمدة موجبة للمورد في تاريخ السداد')
         net,gross = _cents(invoice['subtotal_cents']),_cents(invoice['total_cents'],False)
+        if _has(db, 'opening_supplier_invoices'):
+            opening = db.execute('SELECT remaining_net_cents FROM opening_supplier_invoices WHERE invoice_id=?', (invoice_id,)).fetchone()
+            if opening is not None:
+                if opening['remaining_net_cents'] is None:
+                    raise ValueError('حدد صافي الوعاء المتبقي للفاتورة الافتتاحية في بيانات الافتتاح قبل تطبيق الخصم؛ لا يستنتج من إجماليها')
+                net = _cents(opening['remaining_net_cents'])
         if net>gross:
             raise ValueError('صافي الفاتورة يزيد عن إجماليها؛ راجع مستند المصدر')
         allocated_cents = allocation['amount_cents']

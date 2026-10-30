@@ -178,7 +178,7 @@ def snapshot(db, as_of=None, horizon_days=7):
             queues['negative_funding'].append({
                 'kind': 'funding', 'id': row['account_id'], 'code': row['code'], 'name': row['name'],
                 'amount_cents': row['closing_balance_cents'], 'active': row['active'],
-                'message': 'رصيد الحركات المسجلة دائن؛ الأرصدة الافتتاحية ومطابقة الرصيد الفعلي لم تدخلا في هذا التنبيه.',
+                'message': 'الرصيد الدفتري دائن؛ راجع كشف الأرصدة الافتتاحية ومطابقة الرصيد الفعلي.',
                 'action': {'type': 'ledger', 'id': row['account_id'],
                            'from_date': trial['from_date'], 'to_date': as_of},
             })
@@ -186,7 +186,7 @@ def snapshot(db, as_of=None, horizon_days=7):
     queues['drafts_current'] = preparation['drafts']
     queues['setup_current'] = preparation['setup_issues']
     return {
-        'as_of': as_of, 'horizon_days': horizon_days,
+        'as_of': as_of, 'horizon_days': horizon_days, 'opening_status': accounting.opening_status(db, as_of),
         'currency': accounting.get_settings(db)['base_currency'],
         'generated_at': datetime.now(timezone.utc).isoformat(timespec='seconds'),
         'position': position, 'queues': queues, 'credits_complete': not credit_failures,

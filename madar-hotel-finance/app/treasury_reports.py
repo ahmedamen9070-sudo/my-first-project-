@@ -11,6 +11,12 @@ import ledger_reports
 
 
 SOURCE_LABELS = {
+    'bank_receipt': 'متحصل بنكي',
+    'bank_payment': 'سداد بنكي مباشر',
+    'bank_fee': 'عمولة بنكية',
+    'bank_transfer': 'تحويل بنك وخزينة',
+    'bank_reversal': 'عكس مستند بنكي',
+    'opening_cheque_clearance': 'صرف شيك افتتاحي',
     'treasury_receipt': 'سند قبض خزينة',
     'treasury_payment': 'سند صرف خزينة',
     'treasury_transfer': 'تحويل بين الخزائن',
@@ -83,7 +89,17 @@ def _source_row(db, table, ident):
 
 def _origin(db, source_type, source_id, journal_id):
     """Return the current source's identity, without using its amount twice."""
+    if source_type == 'opening_balance' and _has(db, 'opening_lines'):
+        row = db.execute('''SELECT l.*,b.code FROM opening_lines l
+            JOIN opening_batches b ON b.id=l.batch_id WHERE l.id=?''', (source_id,)).fetchone()
+        if row:
+            return {'source_label': 'رصيد افتتاحي معتمد', 'document_id': row['batch_id'],
+                    'action': {'type': 'opening_balance', 'id': row['batch_id']}}
     direct = {
+        'bank_receipt': ('bank_documents', 'bank_document'),
+        'bank_payment': ('bank_documents', 'bank_document'),
+        'bank_fee': ('bank_documents', 'bank_document'),
+        'bank_transfer': ('bank_documents', 'bank_document'),
         'treasury_receipt': ('treasury_documents', 'treasury_document'),
         'treasury_payment': ('treasury_documents', 'treasury_document'),
         'treasury_transfer': ('treasury_documents', 'treasury_document'),
@@ -96,6 +112,8 @@ def _origin(db, source_type, source_id, journal_id):
         'withholding_remittance': ('withholding_remittances', 'remittance'),
     }
     reversals = {
+        'bank_reversal': ('bank_reversals', 'document_id', 'bank_documents', 'bank_document'),
+        'opening_cheque_clearance': ('bank_cheque_clearances', 'cheque_id', 'opening_bank_cheques', 'opening_bank_cheque'),
         'treasury_reversal': ('treasury_reversals', 'document_id', 'treasury_documents', 'treasury_document'),
         'custody_reversal': ('custody_reversals', 'document_id', 'custody_documents', 'custody_document'),
         'supplier_payment_reversal': ('supplier_payment_reversals', 'payment_id', 'supplier_payments', 'payment'),
@@ -120,7 +138,7 @@ def _origin(db, source_type, source_id, journal_id):
     custodian = _source_row(db, 'custodians', original['custodian_id']) if original.get('custodian_id') else None
     custodian_name = original.get('custodian_name_snapshot') or (custodian or {}).get('name')
     custodian_code = original.get('custodian_code_snapshot') or (custodian or {}).get('code')
-    party = original.get('party_name') or original.get('authority_name') or (supplier or {}).get('name') or custodian_name or ''
+    party = original.get('party_name') or original.get('beneficiary') or original.get('authority_name') or (supplier or {}).get('name') or custodian_name or ''
     return {'party_name': party, 'document_id': original.get('id'),
             'supplier_name': (supplier or {}).get('name'), 'supplier_code': (supplier or {}).get('code'),
             'custodian_id': original.get('custodian_id'),
@@ -146,7 +164,7 @@ def cash_book(db, account_id=None, from_date=None, to_date=None):
             'notes': [
                 'الحركة من أطراف القيود المرحّلة على حساب الخزينة المختار مرة واحدة، بما فيها سداد الموردين واسترداداتهم وتوريد الخصم.',
                 'سداد المورد يظهر بصافي النقد الفعلي بعد الخصم الضريبي؛ لا ينشأ سند خزينة إضافي للحركة نفسها.',
-                'رصيد أول المدة هو صافي القيود السابقة للبداية؛ الأرصدة الافتتاحية الفعلية لم تدخل ولم يفترض رصيد نقدي.',
+                accounting.opening_status(db, ledger['to_date'])['message'],
                 'التحويل بين الخزائن يظهر خروجًا من المصدر ودخولًا للمستلم؛ كل كشف يخص حسابه فقط.',
                 'فتح المستند يعرض حالته الحالية، بينما تظل الحركة والأرصدة حتى تاريخ التقرير.',
             ]}
@@ -181,8 +199,10 @@ def position(db, as_of=None):
     return {'as_of': as_of, 'currency': accounting.get_settings(db)['base_currency'],
             'accounts': rows, 'totals': {'balance_cents': sum(row['balance_cents'] for row in rows)},
             'exceptions': exceptions, 'complete': not exceptions,
+            'opening_status': accounting.opening_status(db, as_of),
             'notes': [
-                'الأرصدة من القيود المسجلة فقط، وليست إثباتًا لرصيد فعلي قبل إدخال الأرصدة الافتتاحية والجرد.',
+                accounting.opening_status(db, as_of)['message'],
+                'الأرصدة من القيود المسجلة؛ إثبات النقدية الفعلية يكون بمحضر الجرد.',
                 'حساب النقدية بالطريق والبنوك والعهد التشغيلية خارج مجموع الخزائن النقدية بالجنيه؛ خزائن نقاط البيع ضمنه.',
                 'الحسابات الموقوفة تظل ظاهرة للمراجعة التاريخية؛ اختيارها لا يسمح بصرف أو قبض جديد.',
             ]}

@@ -18,7 +18,7 @@ import treasury
 DENOMINATIONS = (20000, 10000, 5000, 2000, 1000, 500, 100, 50, 25)
 NOTES = (
     'محضر الجرد مستند إثبات ومراجعة فقط؛ حفظه أو اعتماده لا ينشئ قيدًا أو تسوية نقدية.',
-    'الأرصدة الافتتاحية الفعلية مؤجلة؛ الفرق يحتاج مراجعة بيانات البداية والمستندات قبل أي تسوية مستقلة.',
+    'الفرق يحتاج مراجعة كشف الأرصدة الافتتاحية والمستندات قبل أي تسوية مالية مستقلة.',
     'الرصيد الدفتري يجمع القيود المرحّلة حتى تاريخ الجرد كما كانت مسجلة وقت التقاط المحضر؛ ليس إعادة بناء لحظة تاريخية داخل اليوم.',
     'الفئات قيم للعد يراجعها القائم بالجرد، ويمكن إدخال فئة أخرى بالجنيه والقرش؛ ليست إقرارًا بشأن تداول كل فئة.',
 )
@@ -67,7 +67,7 @@ def initialize(db):
 
 def config(db):
     return {'cash_accounts': treasury.config(db)['cash_accounts'],
-            'denominations_cents': list(DENOMINATIONS), 'currency': 'EGP', 'notes': list(NOTES)}
+            'denominations_cents': list(DENOMINATIONS), 'currency': 'EGP', 'opening_status': accounting.opening_status(db), 'notes': list(NOTES)}
 
 
 def _normalize(data):
@@ -143,7 +143,7 @@ def _plan(db, value):
     actual = sum(line['line_total_cents'] for line in lines)
     return {**value, **book, 'cash_account_code': account['code'], 'cash_account_name': account['name'],
             'lines': lines, 'actual_cents': actual, 'variance_cents': actual - book['book_cents'],
-            'can_confirm': not book['exceptions'], 'warnings': list(NOTES)}
+            'can_confirm': not book['exceptions'], 'opening_status': accounting.opening_status(db,value['business_date']), 'warnings': [accounting.opening_status(db,value['business_date'])['message'],*NOTES]}
 
 
 def preview(db, data):
@@ -300,7 +300,7 @@ def detail(db, count_id):
                live_book_cents=live['book_cents'], live_variance_cents=row['actual_cents'] - live['book_cents'],
                live_evidence=live['evidence'], live_exceptions=live['exceptions'],
                book_changed=live['evidence_fingerprint'] != row['evidence_fingerprint'],
-               warnings=list(NOTES))
+               warnings=[accounting.opening_status(db,row['business_date'])['message'],*NOTES], opening_status=accounting.opening_status(db,row['business_date']))
     void_row = db.execute('SELECT * FROM cash_count_voids WHERE count_id=?', (count_id,)).fetchone()
     row['void'] = dict(void_row) if void_row else None
     if row['void']:

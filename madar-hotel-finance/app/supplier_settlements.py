@@ -12,6 +12,7 @@ from decimal import Decimal, InvalidOperation
 import accounting
 import accounting_periods
 import payables
+import opening_suppliers
 
 ALL_TIME = '9999-12-31'
 SOURCE_TYPES = ('advance', 'return_credit')
@@ -46,6 +47,8 @@ def initialize(db):
         'CREATE INDEX IF NOT EXISTS settlements_target ON settlement_allocations(invoice_id)',
     ]:
         db.execute(statement)
+    if 'source_origin' not in {r['name'] for r in db.execute('PRAGMA table_info(supplier_settlements)')}:
+        db.execute("ALTER TABLE supplier_settlements ADD COLUMN source_origin TEXT NOT NULL DEFAULT 'operating' CHECK(source_origin IN('operating','opening'))")
     for table, alias, condition in [
         ('supplier_settlements', 'OLD', "OLD.status='posted'"),
         ('settlement_allocations', 'OLD', "EXISTS(SELECT 1 FROM supplier_settlements WHERE id=OLD.settlement_id AND status='posted')"),
@@ -66,23 +69,25 @@ def _active_clause(alias='s'):
     return f"{alias}.status='posted' AND {alias}.business_date<=? AND NOT EXISTS(SELECT 1 FROM supplier_settlement_reversals sr WHERE sr.settlement_id={alias}.id AND sr.business_date<=?)"
 
 
-def source_used(db, source_type, source_id, as_of=None):
+def source_used(db, source_type, source_id, as_of=None, source_origin='operating'):
     """Posted source consumption net of dated reversal documents."""
     if not _has(db, 'supplier_settlements'):
         return 0
     as_of = payables._as_of(as_of)
+    origin_sql, origin_args = opening_suppliers.origin_clause(db, 'supplier_settlements', 's', source_origin)
     return db.execute(f'''SELECT COALESCE(SUM(s.amount_cents),0) FROM supplier_settlements s
-        WHERE s.source_type=? AND s.source_id=? AND {_active_clause()}''',
-                      (source_type, source_id, as_of, as_of)).fetchone()[0]
+        WHERE s.source_type=? AND s.source_id=?{origin_sql} AND {_active_clause()}''',
+                      (source_type, source_id, *origin_args, as_of, as_of)).fetchone()[0]
 
 
-def _refund_used(db, source_type, source_id, as_of):
+def _refund_used(db, source_type, source_id, as_of, source_origin='operating'):
     if not _has(db, 'supplier_refunds'):
         return 0
     clause, values = payables._refund_effective_filter(db, 'r', as_of)
+    origin_sql, origin_args = opening_suppliers.origin_clause(db, "supplier_refunds", "r", source_origin)
     return db.execute("""SELECT COALESCE(SUM(r.amount_cents),0) FROM supplier_refunds r
-        WHERE r.source_type=? AND r.source_id=? AND r.status='posted' AND r.business_date<=?""" + clause,
-                      (source_type, source_id, as_of, *values)).fetchone()[0]
+        WHERE r.source_type=? AND r.source_id=?""" + origin_sql + " AND r.status='posted' AND r.business_date<=?" + clause,
+                      (source_type, source_id, *origin_args, as_of, *values)).fetchone()[0]
 
 
 def _payment_reversed(db, payment_id, as_of):
@@ -128,6 +133,7 @@ def source_balances(db, supplier_id, as_of=None):
                             'business_date': payment['payment_date'], 'original_cents': original,
                             'settled_cents': used, 'refunded_cents': refunded, 'available_cents': available,
                             'account_id': account_id})
+    sources.extend(opening_suppliers.advance_sources(db, supplier_id, as_of))
     # The invoice report already includes incoming/outgoing settlements, refunds
     # and dated payment reversals. Reading its remaining credit avoids consuming a
     # credit again and lets a later return create a new credit after settlement.
@@ -140,11 +146,13 @@ def source_balances(db, supplier_id, as_of=None):
             continue
         posting = db.execute('SELECT payable_account_id FROM invoice_postings WHERE invoice_id=?', (invoice['id'],)).fetchone()
         sources.append({'source_type': 'return_credit', 'source_id': invoice['id'], 'supplier_id': supplier_id,
+                        'is_opening': invoice.get('is_opening', False),
                         'code': invoice['code'], 'reference': invoice['reference'], 'source_date': invoice['business_date'],
                         'business_date': invoice['business_date'], 'original_cents': original,
                         'settled_cents': used, 'refunded_cents': refunded, 'available_cents': available,
                         'account_id': posting['payable_account_id']})
     for source in sources:
+        source.setdefault('source_origin', 'operating')
         account = payables._require(db, 'accounts', source['account_id'])
         source.update(account_code=account['code'], account_name=account['name'])
     return {'supplier_id': supplier_id, 'supplier_name': supplier['name'], 'as_of': as_of,
@@ -189,9 +197,12 @@ def _payload(data):
         allocations.append({'invoice_id': invoice_id, 'amount_cents': amount})
     amount = sum(row['amount_cents'] for row in allocations)
     payables._money(amount, allow_zero=False)
-    return {'supplier_id': supplier_id, 'source_type': source_type, 'source_id': source_id,
+    result = {'supplier_id': supplier_id, 'source_type': source_type, 'source_id': source_id,
             'business_date': business_date, 'reference': reference, 'notes': notes,
             'amount_cents': amount, 'allocations': sorted(allocations, key=lambda item: item['invoice_id'])}
+    if opening_suppliers.origin(data) == 'opening':
+        result['source_origin'] = 'opening'
+    return result
 
 
 def _fingerprint(value):
@@ -213,10 +224,10 @@ def capacity_dates(db, from_date):
 
 def _preview(db, value):
     supplier_id, business_date = value['supplier_id'], value['business_date']
-    source_key = (value['source_type'], value['source_id'])
-    historical = { (s['source_type'], s['source_id']): s for s in source_balances(db, supplier_id, business_date)['sources'] }
+    source_key = opening_suppliers.source_key(value)
+    historical = { opening_suppliers.source_key(s): s for s in source_balances(db, supplier_id, business_date)['sources'] }
     boundaries = capacity_dates(db, business_date)
-    future_sources = [{(s['source_type'], s['source_id']): s for s in source_balances(db, supplier_id, day)['sources']} for day in boundaries]
+    future_sources = [{opening_suppliers.source_key(s): s for s in source_balances(db, supplier_id, day)['sources']} for day in boundaries]
     source = historical.get(source_key)
     if source is None:
         raise ValueError('لا يوجد رصيد متاح لهذا المصدر والمورد في تاريخ التسوية')
@@ -238,7 +249,7 @@ def _preview(db, value):
         allocations.append({**item, 'code': invoice['code'], 'reference': invoice['reference'],
                             'due_date': invoice['due_date'], 'outstanding_cents': outstanding})
     return {'supplier_id': supplier_id, 'source_type': source_key[0], 'source_id': source_key[1],
-            'source': source, 'business_date': business_date, 'amount_cents': value['amount_cents'],
+            'source_origin': value.get('source_origin', 'operating'), 'source': source, 'business_date': business_date, 'amount_cents': value['amount_cents'],
             'available_cents': available, 'remaining_source_cents': available - value['amount_cents'],
             'allocations': allocations, 'open_invoices': list(historical_invoices.values()), 'warnings': []}
 
@@ -272,18 +283,18 @@ def save(db, data, settlement_id=None):
     accounting_periods.assert_document_dates(db, value['business_date'], old['business_date'] if old else None)
     _preview(db, value)
     stamp = payables._now()
-    fields = (digest, value['supplier_id'], value['source_type'], value['source_id'], value['business_date'],
+    fields = (digest, value['supplier_id'], value['source_type'], value['source_id'], value.get('source_origin', 'operating'), value['business_date'],
               value['reference'], value['notes'], value['amount_cents'])
     if old:
-        db.execute('''UPDATE supplier_settlements SET request_fingerprint=?,supplier_id=?,source_type=?,source_id=?,
+        db.execute('''UPDATE supplier_settlements SET request_fingerprint=?,supplier_id=?,source_type=?,source_id=?,source_origin=?,
             business_date=?,reference=?,notes=?,amount_cents=?,revision=revision+1,updated_at=? WHERE id=?''',
                    (*fields, stamp, settlement_id))
         db.execute('DELETE FROM settlement_allocations WHERE settlement_id=?', (settlement_id,))
     else:
         code = payables._code(db, 'supplier_settlement', 'SST')
         settlement_id = db.execute('''INSERT INTO supplier_settlements(code,request_key,request_fingerprint,supplier_id,
-            source_type,source_id,business_date,reference,notes,amount_cents,created_at,updated_at)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?)''', (code, key, *fields, stamp, stamp)).lastrowid
+            source_type,source_id,source_origin,business_date,reference,notes,amount_cents,created_at,updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)''', (code, key, *fields, stamp, stamp)).lastrowid
     db.executemany('INSERT INTO settlement_allocations(settlement_id,invoice_id,amount_cents) VALUES(?,?,?)',
                    [(settlement_id, row['invoice_id'], row['amount_cents']) for row in value['allocations']])
     payables._audit(db, 'supplier_settlement', settlement_id, 'update_draft' if old else 'create_draft',
@@ -292,8 +303,11 @@ def save(db, data, settlement_id=None):
 
 
 def _stored_value(db, old):
-    return {key: old[key] for key in ('supplier_id', 'source_type', 'source_id', 'business_date', 'reference', 'notes', 'amount_cents')} | {
+    result = {key: old[key] for key in ('supplier_id', 'source_type', 'source_id', 'business_date', 'reference', 'notes', 'amount_cents')} | {
         'allocations': [dict(row) for row in db.execute('SELECT invoice_id,amount_cents FROM settlement_allocations WHERE settlement_id=? ORDER BY invoice_id', (old['id'],))]}
+    if old.get('source_origin', 'operating') == 'opening':
+        result['source_origin'] = 'opening'
+    return result
 
 
 def approve(db, settlement_id, data):
@@ -389,11 +403,13 @@ def detail(db, settlement_id):
     if reversal:
         result['status'] = 'reversed'
     sources = source_balances(db, result['supplier_id'], ALL_TIME)['sources']
-    result['source'] = next((source for source in sources if (source['source_type'], source['source_id']) == (result['source_type'], result['source_id'])), None)
+    result['source'] = next((source for source in sources if opening_suppliers.source_key(source) == opening_suppliers.source_key(result)), None)
     if result['source'] is None:
-        table = 'supplier_payments' if result['source_type'] == 'advance' else 'invoices'
+        table = ('opening_supplier_advances' if result.get('source_origin') == 'opening' else 'supplier_payments') if result['source_type'] == 'advance' else 'invoices'
         source = payables._require(db, table, result['source_id'])
         result['source'] = {'source_type': result['source_type'], 'source_id': result['source_id'], 'code': source['code'],
+                            'source_origin': result.get('source_origin', 'operating'),
+                            'is_opening': bool(opening_suppliers.invoice_origin(db, source['id'])) if result['source_type'] == 'return_credit' else False,
                             'reference': source.get('reference', source['code']), 'available_cents': 0,
                             'account_id': result['source_account_id']}
     return result
